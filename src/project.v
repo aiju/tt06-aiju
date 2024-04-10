@@ -16,18 +16,36 @@ module tt_um_aiju (
     input  wire       rst_n     // reset_n - low to reset
 );
 
-	reg [7:0] ctr;
+	reg [7:0] rPC, rIP;
+	reg [3:0] state;
+
+	assign uio_oe = 8'b0;
+	assign uio_out = {7'b0, state == 0};
+	assign uo_out = rPC;
 
 	always @(posedge clk or negedge rst_n) begin
-		if(!rst_n)
-			ctr <= 0;
-		else
-			ctr <= ctr + 1;
+		if(!rst_n) begin
+			rPC <= 0;
+			rIP <= 0;
+			state <= 0;
+		end else begin
+			case(state)
+			0: begin
+				state <= 1;
+			end
+			1: begin
+				rIP <= ui_in;
+				rPC <= rPC + 1;
+				state <= 2;
+			end
+			2: begin
+				if(rIP == 42)
+					state <= 2;
+				else
+					state <= 0;
+			end
+			endcase
+		end
 	end
-
-	assign uo_out = ctr;
-
-	assign uio_out = 8'b0;
-	assign uio_oe = 8'b0;
 
 endmodule
