@@ -27,4 +27,7 @@ module tt_um_aiju (
 
 	assign uo_out = ctr;
 
+	assign uio_out = 8'b0;
+	assign uio_oe = 8'b0;
+
 endmodule
