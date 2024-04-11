@@ -116,21 +116,33 @@ module tt_um_aiju (
 	reg [3:0] state, state_nxt;
 	localparam CPU_FETCH = 0;
 	localparam EXECUTE = 1;
+	localparam ALU = 2;
 
 	wire iMOV = rIR[7:6] == 1;
+	wire iALU = rIR[7:6] == 2;
+	wire iMVI = rIR[7:6] == 0 && rIR[2:0] == 3'b110;
+
+	reg [7:0] aluIn;
+	wire [7:0] aluOut;
+	assign aluOut = rA + aluIn;
 
 	reg [7:0] DB;
 	always @(*) begin
-		case(rIR[2:0])
-		0: DB = rB;
-		1: DB = rC;
-		2: DB = rD;
-		3: DB = rE;
-		4: DB = rH;
-		5: DB = rL;
-		6: DB = memory_rdata;
-		7: DB = rA;
-		endcase
+		if(state == ALU)
+			DB = aluOut;
+		else if(iMVI)
+			DB = memory_rdata;
+		else
+			case(rIR[2:0])
+			0: DB = rB;
+			1: DB = rC;
+			2: DB = rD;
+			3: DB = rE;
+			4: DB = rH;
+			5: DB = rL;
+			6: DB = memory_rdata;
+			7: DB = rA;
+			endcase
 	end
 
 	always @(posedge clk or negedge rst_n) begin
@@ -139,6 +151,7 @@ module tt_um_aiju (
 			rIR <= 0;
 			state <= CPU_FETCH;
 			{rA, rB, rC, rD, rE, rH, rL} <= 0;
+			aluIn <= 0;
 		end else begin
 			state <= state_nxt;
 			case(state)
@@ -153,9 +166,13 @@ module tt_um_aiju (
 					rA <= 0;
 				if(rIR == 1)
 					rA <= rA + 1;
-				if(rIR != 2 || memory_done)
+				if(iMVI && memory_done)
+					rPC <= rPC + 1;
+				if(iALU)
+					state <= ALU;
+				else if(rIR != 2 && !iMVI || memory_done)
 					state <= CPU_FETCH;
-				if(iMOV) begin
+				if(iMOV || iMVI && memory_done) begin
 					case(rIR[5:3])
 					0: rB <= DB;
 					1: rC <= DB;
@@ -166,6 +183,12 @@ module tt_um_aiju (
 					7: rA <= DB;
 					endcase
 				end
+				if(iALU)
+					aluIn <= DB;
+			end
+			ALU: begin
+				rA <= DB;
+				state <= CPU_FETCH;
 			end
 			endcase
 		end
@@ -183,9 +206,15 @@ module tt_um_aiju (
 			memory_read = 1'b1;
 		end
 		EXECUTE: begin
-			memory_addr = 16'hCAFE;
-			memory_wdata = rA;
-			memory_write = rIR == 2;
+			if(rIR == 2) begin
+				memory_addr = 16'hCAFE;
+				memory_wdata = rA;
+				memory_write = 1'b1;
+			end
+			if(iMVI) begin
+				memory_addr = rPC;
+				memory_read = 1'b1;
+			end
 		end
 		endcase
 	end

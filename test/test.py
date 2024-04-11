@@ -7,7 +7,7 @@ from cocotb.triggers import ClockCycles, Timer
 
 class Memory:
   def __init__(self):
-    self.contents = [1,1,1,1,0x4F,1,0x51,0x7A,2] + [0] * 65536
+    self.contents = [6,23,0x3E,42,0x80,2] + [0] * 65536
   def read(self, addr):
     return self.contents[addr]
   def write(self, addr, value):
@@ -76,31 +76,44 @@ class CPU:
     return await self.bus_model.read(addr)
   async def write(self, addr, value):
     await self.bus_model.write(addr, value)
+  def getReg(self, r):
+    return [self.rB,self.rC,self.rD,self.rE,self.rH,self.rL,0,self.rA][r]
+  def setReg(self, r, data):
+    if r == 0:
+      self.rB = data
+    elif r == 1:
+      self.rC = data
+    elif r == 2:
+      self.rD = data
+    elif r == 3:
+      self.rE = data
+    elif r == 4:
+      self.rH = data
+    elif r == 5:
+      self.rL = data
+    elif r == 7:
+      self.rA = data
+    else:
+      assert False
   async def step(self):
     ir = await self.read(self.rPC)
     self.rPC += 1
     if ir == 0:
       self.rA = 0
     elif ir == 1:
-      self.rA += 1
+      self.rA = (self.rA + 1) & 255
     elif ir == 2:
       await self.write(0xcafe, self.rA)
+    elif (ir & 0xc7) == 0x06:
+      data = await self.read(self.rPC)
+      self.rPC += 1
+      self.setReg(ir >> 3 & 7, data)
     elif (ir & 0xc0) == 0x40:
-      data = [self.rB,self.rC,self.rD,self.rE,self.rH,self.rL,0,self.rA][ir & 7]
-      if (ir >> 3 & 7) == 0:
-        self.rB = data
-      elif (ir >> 3 & 7) == 1:
-        self.rC = data
-      elif (ir >> 3 & 7) == 2:
-        self.rD = data
-      elif (ir >> 3 & 7) == 3:
-        self.rE = data
-      elif (ir >> 3 & 7) == 4:
-        self.rH = data
-      elif (ir >> 3 & 7) == 5:
-        self.rL = data
-      elif (ir >> 3 & 7) == 7:
-        self.rA = data
+      data = self.getReg(ir & 7)
+      self.setReg(ir >> 3 & 7, data)
+    elif (ir & 0xc0) == 0x80:
+      data = self.getReg(ir & 7)
+      self.rA = (self.rA + data) & 255
 
 
 async def timeout(dut):
