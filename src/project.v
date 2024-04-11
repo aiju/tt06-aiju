@@ -111,18 +111,34 @@ module tt_um_aiju (
 	end
 
 	reg [15:0] rPC;
-	reg [7:0] rA;
+	reg [7:0] rA, rB, rC, rD, rE, rH, rL;
 	reg [7:0] rIR;
 	reg [3:0] state, state_nxt;
 	localparam CPU_FETCH = 0;
 	localparam EXECUTE = 1;
+
+	wire iMOV = rIR[7:6] == 1;
+
+	reg [7:0] DB;
+	always @(*) begin
+		case(rIR[2:0])
+		0: DB = rB;
+		1: DB = rC;
+		2: DB = rD;
+		3: DB = rE;
+		4: DB = rH;
+		5: DB = rL;
+		6: DB = memory_rdata;
+		7: DB = rA;
+		endcase
+	end
 
 	always @(posedge clk or negedge rst_n) begin
 		if(!rst_n) begin
 			rPC <= 0;
 			rIR <= 0;
 			state <= CPU_FETCH;
-			rA <= 0;
+			{rA, rB, rC, rD, rE, rH, rL} <= 0;
 		end else begin
 			state <= state_nxt;
 			case(state)
@@ -139,6 +155,17 @@ module tt_um_aiju (
 					rA <= rA + 1;
 				if(rIR != 2 || memory_done)
 					state <= CPU_FETCH;
+				if(iMOV) begin
+					case(rIR[5:3])
+					0: rB <= DB;
+					1: rC <= DB;
+					2: rD <= DB;
+					3: rE <= DB;
+					4: rH <= DB;
+					5: rL <= DB;
+					7: rA <= DB;
+					endcase
+				end
 			end
 			endcase
 		end
