@@ -113,83 +113,112 @@ module tt_um_aiju (
 	reg [15:0] rPC;
 	reg [7:0] rA, rB, rC, rD, rE, rH, rL;
 	reg [7:0] rIR;
-	reg [3:0] state, state_nxt;
+	reg [3:0] state;
 	localparam CPU_FETCH = 0;
-	localparam EXECUTE = 1;
-	localparam ALU = 2;
+	localparam CPU_DECODE = 1;
+	localparam CPU_MVI0 = 2;
+	localparam CPU_MVI1 = 3;
+	localparam CPU_ALU0 = 4;
+	localparam CPU_ALU1 = 5;
+	localparam CPU_MOV = 6;
 
-	wire iMOV = rIR[7:6] == 1;
+	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
 	wire iMVI = rIR[7:6] == 0 && rIR[2:0] == 3'b110;
+	wire memory_operand =
+		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
+		|| iALU && rIR[2:0] == 3'b110
+		|| iMVI && rIR[5:3] == 3'b110;
+
+	reg [3:0] decode_goto;
+	always @(*) begin
+		decode_goto = CPU_FETCH;
+		case(1'b1)
+		iMOV: decode_goto = CPU_MOV;
+		iALU: decode_goto = CPU_ALU0;
+		iMVI: decode_goto = CPU_MVI0;
+		endcase
+	end
 
 	reg [7:0] aluIn;
 	wire [7:0] aluOut;
-	assign aluOut = rA + aluIn;
+	assign aluOut = state == CPU_MVI1 ? aluIn : rA + aluIn;
+
+	wire pc_increment = (state == CPU_FETCH || state == CPU_MVI0) && memory_done;
+	wire ir_load = state == CPU_FETCH && memory_done;
+	reg [3:0] db_dst;
+	reg [3:0] db_src;
 
 	reg [7:0] DB;
 	always @(*) begin
-		if(state == ALU)
-			DB = aluOut;
-		else if(iMVI)
-			DB = memory_rdata;
-		else
-			case(rIR[2:0])
-			0: DB = rB;
-			1: DB = rC;
-			2: DB = rD;
-			3: DB = rE;
-			4: DB = rH;
-			5: DB = rL;
-			6: DB = memory_rdata;
-			7: DB = rA;
-			endcase
+		DB = 8'bx;
+		case(db_src)
+		4'b0111: DB = aluOut;
+		4'b1000: DB = rB;
+		4'b1001: DB = rC;
+		4'b1010: DB = rD;
+		4'b1011: DB = rE;
+		4'b1100: DB = rH;
+		4'b1101: DB = rL;
+		4'b1110: DB = memory_rdata;
+		4'b1111: DB = rA;
+		endcase
 	end
 
 	always @(posedge clk or negedge rst_n) begin
 		if(!rst_n) begin
 			rPC <= 0;
 			rIR <= 0;
-			state <= CPU_FETCH;
+		end else begin
+			if(pc_increment)
+				rPC <= rPC + 1;
+			if(ir_load)
+				rIR <= memory_rdata;
+		end
+	end
+
+	always @(posedge clk or negedge rst_n) begin
+		if(!rst_n) begin
 			{rA, rB, rC, rD, rE, rH, rL} <= 0;
 			aluIn <= 0;
 		end else begin
-			state <= state_nxt;
+			case(db_dst)
+			4'b0111: aluIn <= DB;
+			4'b1000: rB <= DB;
+			4'b1001: rC <= DB;
+			4'b1010: rD <= DB;
+			4'b1011: rE <= DB;
+			4'b1100: rH <= DB;
+			4'b1101: rL <= DB;
+			4'b1111: rA <= DB;
+			endcase
+		end
+	end
+
+	always @(posedge clk or negedge rst_n) begin
+		if(!rst_n) begin
+			state <= CPU_FETCH;
+		end else begin
 			case(state)
 			CPU_FETCH:
-				if(memory_done) begin
-					rIR <= memory_rdata;
-					rPC <= rPC + 1;
-					state <= EXECUTE;
-				end
-			EXECUTE: begin
-				if(rIR == 0)
-					rA <= 0;
-				if(rIR == 1)
-					rA <= rA + 1;
-				if(iMVI && memory_done)
-					rPC <= rPC + 1;
-				if(iALU)
-					state <= ALU;
-				else if(rIR != 2 && !iMVI || memory_done)
+				if(memory_done)
+					state <= CPU_DECODE;
+			CPU_DECODE:
+				state <= decode_goto;
+			CPU_MVI0:
+				if(memory_done)
+					state <= memory_operand ? CPU_MVI1 : CPU_FETCH;
+			CPU_MVI1:
+				if(memory_done)
 					state <= CPU_FETCH;
-				if(iMOV || iMVI && memory_done) begin
-					case(rIR[5:3])
-					0: rB <= DB;
-					1: rC <= DB;
-					2: rD <= DB;
-					3: rE <= DB;
-					4: rH <= DB;
-					5: rL <= DB;
-					7: rA <= DB;
-					endcase
-				end
-				if(iALU)
-					aluIn <= DB;
-			end
-			ALU: begin
-				rA <= DB;
+			CPU_MOV:
+				if(!memory_operand || memory_done)
+					state <= CPU_FETCH;
+			CPU_ALU0:
+				if(!memory_operand || memory_done)
+					state <= CPU_ALU1;
+			CPU_ALU1:
 				state <= CPU_FETCH;
-			end
 			endcase
 		end
 	end
@@ -199,22 +228,55 @@ module tt_um_aiju (
 		memory_wdata = 8'bx;
 		memory_read = 1'b0;
 		memory_write = 1'b0;
-		state_nxt = state;
 		case(state)
-		CPU_FETCH: begin
+		CPU_FETCH, CPU_MVI0: begin
 			memory_addr = rPC;
 			memory_read = 1'b1;
 		end
-		EXECUTE: begin
-			if(rIR == 2) begin
-				memory_addr = 16'hCAFE;
-				memory_wdata = rA;
+		CPU_MVI1: begin
+			memory_addr = {rH, rL};
+			memory_wdata = DB;
+			memory_write = 1'b1;
+		end
+		CPU_MOV: begin
+			memory_addr = {rH, rL};
+			if(rIR[5:3] == 6) begin
+				memory_wdata = DB;
 				memory_write = 1'b1;
-			end
-			if(iMVI) begin
-				memory_addr = rPC;
+			end else if(rIR[2:0] == 6)
+				memory_read = 1'b1;
+		end
+		CPU_ALU0: begin
+			if(memory_operand) begin
+				memory_addr = {rH, rL};
 				memory_read = 1'b1;
 			end
+		end
+		endcase
+	end
+
+	always @(*) begin
+		db_src = 4'b0000;
+		db_dst = 4'b0000;
+		case(state)
+		CPU_MOV: begin
+			db_src = {1'b1, rIR[2:0]};
+			db_dst = {1'b1, rIR[5:3]};
+		end
+		CPU_MVI0: begin
+			db_src = 4'b1110;
+			db_dst = memory_operand ? 4'b0111 : {1'b1, rIR[5:3]};
+		end
+		CPU_MVI1: begin
+			db_src = 4'b0111;
+		end
+		CPU_ALU0: begin
+			db_src = {1'b1, rIR[2:0]};
+			db_dst = 4'b0111;
+		end
+		CPU_ALU1: begin
+			db_src = 4'b0111;
+			db_dst = 4'b1111;
 		end
 		endcase
 	end

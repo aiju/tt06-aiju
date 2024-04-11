@@ -7,7 +7,8 @@ from cocotb.triggers import ClockCycles, Timer
 
 class Memory:
   def __init__(self):
-    self.contents = [6,23,0x3E,42,0x80,2] + [0] * 65536
+    self.contents = [0x3E, 0x18, 0x2E, 0xFE, 0x26, 0xCA, 0x77, 0x5E] + [0] * 65536
+    self.contents[0xCAFE] = 0x21
   def read(self, addr):
     return self.contents[addr]
   def write(self, addr, value):
@@ -98,21 +99,27 @@ class CPU:
   async def step(self):
     ir = await self.read(self.rPC)
     self.rPC += 1
-    if ir == 0:
-      self.rA = 0
-    elif ir == 1:
-      self.rA = (self.rA + 1) & 255
-    elif ir == 2:
-      await self.write(0xcafe, self.rA)
-    elif (ir & 0xc7) == 0x06:
+    if (ir & 0xc7) == 0x06:
       data = await self.read(self.rPC)
       self.rPC += 1
-      self.setReg(ir >> 3 & 7, data)
+      if (ir >> 3 & 7) == 6:
+        await self.write(self.rH << 8 | self.rL, data)
+      else:
+        self.setReg(ir >> 3 & 7, data)
     elif (ir & 0xc0) == 0x40:
-      data = self.getReg(ir & 7)
-      self.setReg(ir >> 3 & 7, data)
+      if (ir & 7) == 6:
+        data = await self.read(self.rH << 8 | self.rL)
+      else:
+        data = self.getReg(ir & 7)
+      if (ir >> 3 & 7) == 6:
+        await self.write(self.rH << 8 | self.rL, data)
+      else:
+        self.setReg(ir >> 3 & 7, data)
     elif (ir & 0xc0) == 0x80:
-      data = self.getReg(ir & 7)
+      if (ir & 7) == 6:
+        data = await self.read(self.rH << 8 | self.rL)
+      else:
+        data = self.getReg(ir & 7)
       self.rA = (self.rA + data) & 255
 
 
