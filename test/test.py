@@ -4,15 +4,20 @@
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, Timer
+import random
 
 class Memory:
   def __init__(self):
-    self.contents = [0x3E, 0x18, 0x2E, 0xFE, 0x26, 0xCA, 0x77, 0x5E] + [0] * 65536
-    self.contents[0xCAFE] = 0x21
+    self.contents = [0] * 65536
+    self.ptr = 0
   def read(self, addr):
     return self.contents[addr]
   def write(self, addr, value):
     self.contents[addr] = value
+  def append(self, values):
+    for i in values:
+      self.write(self.ptr, i)
+      self.ptr += 1
 
 class BusModel:
   def __init__(self, memory, dut):
@@ -72,11 +77,16 @@ class CPU:
     self.rH = 0
     self.rL = 0
     self.rPC = 0
+    self.rSP = 0
+    self.rPSR = 2
     self.bus_model = bus_model
   async def read(self, addr):
     return await self.bus_model.read(addr)
   async def write(self, addr, value):
     await self.bus_model.write(addr, value)
+  async def push(self, value):
+    self.rSP = (self.rSP - 1) & 0xffff
+    await self.bus_model.write(self.rSP, value)
   def getReg(self, r):
     return [self.rB,self.rC,self.rD,self.rE,self.rH,self.rL,0,self.rA][r]
   def setReg(self, r, data):
@@ -121,10 +131,48 @@ class CPU:
       else:
         data = self.getReg(ir & 7)
       self.rA = (self.rA + data) & 255
+    elif ir == 0xc3:
+      pcL = await self.read(self.rPC)
+      self.rPC += 1
+      pcH = await self.read(self.rPC)
+      self.rPC = pcL | pcH << 8
+    elif ir == 0xc5:
+      await self.push(self.rB)
+      await self.push(self.rC)
+    elif ir == 0xd5:
+      await self.push(self.rD)
+      await self.push(self.rE)
+    elif ir == 0xe5:
+      await self.push(self.rH)
+      await self.push(self.rL)
+    elif ir == 0xf5:
+      await self.push(self.rA)
+      await self.push(self.rPSR)
+
+class TestCodeGenerator:
+  def __init__(self, memory):
+    self.memory = memory
+  def set_reg(self, r, value):
+    assert r >= 0 and r <= 7 and r != 6
+    self.memory.append([0x06 | r << 3, value])
+  def random_regs(self):
+    for i in range(8):
+      if i != 6:
+        self.set_reg(i, random.randint(0, 255))
+  def check_regs(self):
+    for i in range(8):
+      if i != 6:
+        self.memory.append([0x70 | i])
+  def test_code(self, code, **kwargs):
+    self.random_regs()
+    self.memory.append(code)
+    if 'jump' in kwargs:
+        self.memory.ptr = kwargs['jump']
+    self.check_regs()
 
 
 async def timeout(dut):
-  await Timer(1000, units='us')
+  await Timer(10000, units='us')
   assert False and "TIMED OUT"
 
 @cocotb.test()
@@ -148,8 +196,13 @@ async def test_project(dut):
   # Set the input values, wait one clock cycle, and check the output
   dut._log.info("Test")
 
-  cpu = CPU(BusModel(Memory(), dut))
-  for i in range(20):
+  memory = Memory()
+  codegen = TestCodeGenerator(memory)
+  codegen.test_code([0xc5, 0xd5, 0xe5, 0xf5])
+  #codegen.test_code([0xc3, 0xbe, 0xba], jump=0xbabe)
+
+  cpu = CPU(BusModel(memory, dut))
+  for i in range(200):
     await cpu.step()
 
   # assert dut.uo_out.value == 50
