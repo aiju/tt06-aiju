@@ -372,6 +372,47 @@ class CPU:
   @instruction(0x3f)
   async def iCMC(self):
     self.rPSR ^= FLAGC
+  @instruction(0xcd)
+  async def iCALL(self):
+    target = await self.fetch16()
+    await self.push(self.rPC >> 8)
+    await self.push(self.rPC & 0xff)
+    self.rPC = target
+  @instruction(0xc9)
+  async def iRET(self):
+    lo = await self.pop()
+    hi = await self.pop()
+    self.rPC = lo | hi << 8
+  def check_cond(self, cond):
+    assert 0 <= cond <= 7
+    flag = [FLAGZ, FLAGC, FLAGP, FLAGS][cond>>1]
+    return ((self.rPSR & flag) != 0) == ((cond & 1) != 0)
+  @instruction(0xc4, {'cond':(5,3)})
+  async def iCALLcc(self, cond):
+    target = await self.fetch16()
+    if self.check_cond(cond):
+      await self.push(self.rPC >> 8)
+      await self.push(self.rPC & 0xff)
+      self.rPC = target
+  @instruction(0xc0, {'cond':(5,3)})
+  async def iRETcc(self, cond):
+    if self.check_cond(cond):
+      lo = await self.pop()
+      hi = await self.pop()
+      self.rPC = lo | hi << 8
+  @instruction(0xc2, {'cond':(5,3)})
+  async def iJMPcc(self, cond):
+    target = await self.fetch16()
+    if self.check_cond(cond):
+      self.rPC = target
+  @instruction(0xc7, {'n':(5,3)})
+  async def iRST(self, n):
+    await self.push(self.rPC >> 8)
+    await self.push(self.rPC & 0xff)
+    self.rPC = n * 8
+  @instruction(0xe9)
+  async def iPCHL(self):
+    self.rPC = self.rL | self.rH << 8
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -389,7 +430,9 @@ class TestCodeGenerator:
     self.random_regs()
     self.memory.append(code)
     if 'jump' in kwargs:
-        self.memory.ptr = kwargs['jump']
+      self.memory.ptr = kwargs['jump']
+    if 'after_jump' in kwargs:
+      self.memory.append(kwargs['after_jump'])
     self.check_regs()
 
 
@@ -446,8 +489,65 @@ async def test_PUSH_POP(dut, codegen):
   codegen.test_code([0xc5, 0xd5, 0xe5, 0xf5, 0xc1, 0xd1, 0xe1, 0xf1])
 
 @test()
-async def test_JUMP(dut, codegen):
+async def test_JMP(dut, codegen):
   codegen.test_code([0xc3, 0xbe, 0xba], jump=0xbabe)
+
+@test()
+async def test_CALL(dut, codegen):
+  codegen.test_code([0xcd, 0xbe, 0xba], jump=0xbabe, after_jump=[0xc1])
+
+@test()
+async def test_CALLcc(dut, codegen):
+  for cc in range(8):
+    for n in range(4):
+      codegen.test_code([0xc4 | cc << 3, 0xbe, 0xba])
+  codegen.memory.write(0xbabe, 0xc9)
+
+@test()
+async def test_RETcc(dut, codegen):
+  loc = 0x1000
+  for cc in range(8):
+    for n in range(4):
+      codegen.test_code([0xcd, loc&0xff, loc>>8])
+      codegen.memory.write(loc, 0xc0 | cc << 3)
+      codegen.memory.write(loc+1, 0x2f)
+      codegen.memory.write(loc+2, 0xc9)
+      loc += 23
+
+@test()
+async def test_JMPcc(dut, codegen):
+  loc = 0x1000
+  for cc in range(8):
+    for n in range(4):
+      codegen.test_code([0xc2, loc&0xff, loc>>8])
+      codegen.memory.write(loc, 0x2f)
+      codegen.memory.write(loc+1, 0xc3)
+      codegen.memory.write(loc+2, codegen.memory.ptr & 0xff)
+      codegen.memory.write(loc+3, codegen.memory.ptr >> 8)
+      loc += 23
+
+@test()
+async def test_RET(dut, codegen):
+  codegen.test_code([0x01, 0xbe, 0xba, 0xc5, 0xc9], jump=0xbabe)
+
+@test()
+async def test_CALL_RET(dut, codegen):
+  codegen.test_code([0xcd, 0xbe, 0xba])
+  codegen.memory.write(0xbabe, 0x2f)
+  codegen.memory.write(0xbabe, 0xc9)
+
+@test()
+async def test_RST(dut, codegen):
+  codegen.memory.append([0x3E, 0xC9, 0x32, 0x00, 0x00, 0xc3, 0x00, 0x10])
+  for i in range(1, 8):
+    codegen.memory.write(i * 8, 0xc9)
+  codegen.memory.ptr = 0x1000
+  for n in range(8):
+    codegen.test_code([0xc7 | n << 3])
+
+@test()
+async def test_PCHL(dut, codegen):
+  codegen.test_code([0x21, 0xbe, 0xba, 0xe9], jump=0xbabe)
 
 @test()
 async def test_LDA(dut, codegen):

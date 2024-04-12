@@ -140,6 +140,15 @@ module tt_um_aiju_8080 (
 	localparam CPU_DIRECT2 = 19;
 	localparam CPU_DIRECT3 = 20;
 	localparam CPU_UNARY = 21;
+	localparam CPU_CALL0 = 22;
+	localparam CPU_CALL1 = 23;
+	localparam CPU_CALL2 = 24;
+	localparam CPU_CALL3 = 25;
+	localparam CPU_RET0 = 26;
+	localparam CPU_RET1 = 27;
+	localparam CPU_PCHL0 = 28;
+	localparam CPU_PCHL1 = 29;
+	localparam CPU_PCHL2 = 30;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -155,10 +164,31 @@ module tt_um_aiju_8080 (
 	wire iLHLD = rIR == 8'h2A;
 	wire iSHLD = rIR == 8'h22;
 	wire iUNARY = (rIR & ~8'h38) == 8'b0000_0111;
+	wire iCALL = rIR == 8'hCD;
+	wire iCALLcc = (rIR & ~8'h38) == 8'b1100_0100;
+	wire iRST = (rIR & ~8'h38) == 8'b1100_0111;
+	wire iRET = rIR == 8'hC9;
+	wire iRETcc = (rIR & ~8'h30) == 8'b1100_0000;
+	wire iJMPcc = (rIR & ~8'h30) == 8'b1100_0010;
+	wire iPCHL = rIR == 8'hE9;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
 		|| iMVI && rIR[5:3] == 3'b110;
+
+	reg condition;
+	always @(*) begin
+		case(rIR[5:3])
+		3'b000: condition = !rPSR[6];
+		3'b001: condition = rPSR[6];
+		3'b010: condition = !rPSR[0];
+		3'b011: condition = rPSR[0];
+		3'b100: condition = !rPSR[2];
+		3'b101: condition = rPSR[2];
+		3'b110: condition = !rPSR[7];
+		3'b111: condition = rPSR[7];
+		endcase
+	end
 
 	reg [4:0] decode_goto;
 	always @(*) begin
@@ -167,13 +197,17 @@ module tt_um_aiju_8080 (
 		iMOV: decode_goto = CPU_MOV;
 		iALU, iALUI: decode_goto = CPU_ALU0;
 		iMVI: decode_goto = CPU_MVI0;
-		iJMP: decode_goto = CPU_JMP0;
+		iJMP, iJMPcc: decode_goto = CPU_JMP0;
 		iPUSH: decode_goto = CPU_PUSH0;
 		iPOP: decode_goto = CPU_POP0;
 		iHALT: decode_goto = CPU_HALT;
 		iLXI: decode_goto = CPU_LXI0;
 		iLDA, iSTA, iLHLD, iSHLD: decode_goto = CPU_DIRECT0;
 		iUNARY: decode_goto = CPU_UNARY;
+		iCALL, iCALLcc, iRST: decode_goto = CPU_CALL0;
+		iRET: decode_goto = CPU_RET0;
+		iRETcc: decode_goto = condition ? CPU_RET0 : CPU_FETCH;
+		iPCHL: decode_goto = CPU_PCHL0;
 		endcase
 	end
 
@@ -274,26 +308,42 @@ module tt_um_aiju_8080 (
 		state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0
 		|| state == CPU_ALU0 && iALUI
 		|| state == CPU_LXI0 || state == CPU_LXI1
-		|| state == CPU_DIRECT0 || state == CPU_DIRECT1;
+		|| state == CPU_DIRECT0 || state == CPU_DIRECT1
+		|| (state == CPU_CALL0 || state == CPU_CALL1) && !iRST;
 	wire al_increment = state == CPU_DIRECT2;
-	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1;
-	wire sp_increment = state == CPU_POP0 || state == CPU_POP1;
-	wire pc_jmp = state == CPU_JMP1;
+	wire sp_decrement =
+		state == CPU_PUSH0 || state == CPU_PUSH1
+		|| state == CPU_CALL1 && (!iCALLcc || condition)
+		|| state == CPU_CALL2;
+	wire sp_increment =
+		state == CPU_POP0 || state == CPU_POP1
+		|| state == CPU_RET0 || state == CPU_RET1;
+	wire pc_jmp =
+		state == CPU_JMP1 && (!iJMPcc || condition)
+		|| state == CPU_RET1;
+	wire pc_jmp_al = state == CPU_CALL3 && !iRST || state == CPU_PCHL2;
+	wire pc_rst_jmp = state == CPU_CALL3 && iRST;
 	wire ir_load = state == CPU_FETCH;
 	assign halted = state == CPU_HALT;
-	reg [3:0] db_dst;
-	reg [3:0] db_src;
+	reg [4:0] db_dst;
+	reg [4:0] db_src;
 
-	localparam DB_ALL = 4'b0010;
-	localparam DB_ALH = 4'b0011;
-	localparam DB_SPL = 4'b0100;
-	localparam DB_SPH = 4'b0101;
-	localparam DB_PSR = 4'b0110;
-	localparam DB_ALU = 4'b0111;
-	localparam DB_MEM = 4'b1110;
-	localparam DB_H = 4'b1100;
-	localparam DB_L = 4'b1101;
-	localparam DB_A = 4'b1111;
+	localparam DB_ALL = 5'b00010;
+	localparam DB_ALH = 5'b00011;
+	localparam DB_SPL = 5'b00100;
+	localparam DB_SPH = 5'b00101;
+	localparam DB_PSR = 5'b00110;
+	localparam DB_ALU = 5'b00111;
+	localparam DB_B = 5'b01000;
+	localparam DB_C = 5'b01001;
+	localparam DB_D = 5'b01010;
+	localparam DB_E = 5'b01011;
+	localparam DB_H = 5'b01100;
+	localparam DB_L = 5'b01101;
+	localparam DB_MEM = 5'b01110;
+	localparam DB_A = 5'b01111;
+	localparam DB_PCL = 5'b10000;
+	localparam DB_PCH = 5'b10001;
 
 	reg [7:0] DB;
 	always @(*) begin
@@ -301,14 +351,16 @@ module tt_um_aiju_8080 (
 		case(db_src)
 		DB_PSR: DB = rPSR;
 		DB_ALU: DB = aluOut;
-		4'b1000: DB = rB;
-		4'b1001: DB = rC;
-		4'b1010: DB = rD;
-		4'b1011: DB = rE;
-		4'b1100: DB = rH;
-		4'b1101: DB = rL;
-		4'b1110: DB = memory_rdata;
-		4'b1111: DB = rA;
+		DB_B: DB = rB;
+		DB_C: DB = rC;
+		DB_D: DB = rD;
+		DB_E: DB = rE;
+		DB_H: DB = rH;
+		DB_L: DB = rL;
+		DB_MEM: DB = memory_rdata;
+		DB_A: DB = rA;
+		DB_PCL: DB = rPC[7:0];
+		DB_PCH: DB = rPC[15:8];
 		endcase
 	end
 
@@ -324,6 +376,10 @@ module tt_um_aiju_8080 (
 					rPC <= rPC + 1;
 				if(pc_jmp)
 					rPC <= {memory_rdata, aluIn};
+				if(pc_jmp_al)
+					rPC <= AL;
+				if(pc_rst_jmp)
+					rPC <= rIR & 8'h38;
 				if(ir_load)
 					rIR <= memory_rdata;
 				if(db_dst == DB_SPH)
@@ -365,13 +421,13 @@ module tt_um_aiju_8080 (
 			if(cycle_done) begin
 				case(db_dst)
 				DB_ALU: aluIn <= DB;
-				4'b1000: rB <= DB;
-				4'b1001: rC <= DB;
-				4'b1010: rD <= DB;
-				4'b1011: rE <= DB;
-				4'b1100: rH <= DB;
-				4'b1101: rL <= DB;
-				4'b1111: rA <= DB;
+				DB_B: rB <= DB;
+				DB_C: rC <= DB;
+				DB_D: rD <= DB;
+				DB_E: rE <= DB;
+				DB_H: rH <= DB;
+				DB_L: rL <= DB;
+				DB_A: rA <= DB;
 				endcase
 			end
 		end
@@ -428,6 +484,27 @@ module tt_um_aiju_8080 (
 					state <= CPU_FETCH;
 				CPU_UNARY:
 					state <= CPU_FETCH;
+				CPU_CALL0:
+					state <= CPU_CALL1;
+				CPU_CALL1:
+					if(!iCALLcc || condition)
+						state <= CPU_CALL2;
+					else
+						state <= CPU_FETCH;
+				CPU_CALL2:
+					state <= CPU_CALL3;
+				CPU_CALL3:
+					state <= CPU_FETCH;
+				CPU_RET0:
+					state <= CPU_RET1;
+				CPU_RET1:
+					state <= CPU_FETCH;
+				CPU_PCHL0:
+					state <= CPU_PCHL1;
+				CPU_PCHL1:
+					state <= CPU_PCHL2;
+				CPU_PCHL2:
+					state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -442,6 +519,10 @@ module tt_um_aiju_8080 (
 		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1, CPU_LXI0, CPU_LXI1, CPU_DIRECT0, CPU_DIRECT1: begin
 			memory_addr = rPC;
 			memory_read = 1'b1;
+		end
+		CPU_CALL0, CPU_CALL1: begin
+			memory_addr = rPC;
+			memory_read = !iRST;
 		end
 		CPU_MVI1: begin
 			memory_addr = {rH, rL};
@@ -470,7 +551,7 @@ module tt_um_aiju_8080 (
 			memory_wdata = DB;
 			memory_write = 1'b1;
 		end
-		CPU_POP0, CPU_POP1: begin
+		CPU_POP0, CPU_POP1, CPU_RET0, CPU_RET1: begin
 			memory_addr = rSP;
 			memory_read = 1'b1;
 		end
@@ -479,6 +560,11 @@ module tt_um_aiju_8080 (
 			memory_read = iLDA || iLHLD;
 			memory_write = iSTA || iSHLD;
 			memory_wdata = DB;
+		end
+		CPU_CALL2, CPU_CALL3: begin
+			memory_addr = rSP;
+			memory_wdata = DB;
+			memory_write = 1'b1;
 		end
 		endcase
 	end
@@ -511,7 +597,7 @@ module tt_um_aiju_8080 (
 			alu_op = rIR[5:3];
 			set_flags = 8'hff;
 		end
-		CPU_JMP0: begin
+		CPU_JMP0, CPU_RET0: begin
 			db_src = DB_MEM;
 			db_dst = DB_ALU;
 		end
@@ -572,6 +658,26 @@ module tt_um_aiju_8080 (
 			5: set_flags = 0;
 			default: set_flags = 1;
 			endcase
+		end
+		CPU_CALL0: begin
+			db_src = DB_MEM;
+			db_dst = DB_ALL;
+		end
+		CPU_CALL1: begin
+			db_src = DB_MEM;
+			db_dst = DB_ALH;
+		end
+		CPU_CALL2:
+			db_src = DB_PCH;
+		CPU_CALL3:
+			db_src = DB_PCL;
+		CPU_PCHL0: begin
+			db_src = DB_L;
+			db_dst = DB_ALL;
+		end
+		CPU_PCHL1: begin
+			db_src = DB_H;
+			db_dst = DB_ALH;
 		end
 		endcase
 	end
