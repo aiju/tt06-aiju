@@ -139,6 +139,7 @@ module tt_um_aiju (
 	localparam CPU_DIRECT1 = 18;
 	localparam CPU_DIRECT2 = 19;
 	localparam CPU_DIRECT3 = 20;
+	localparam CPU_UNARY = 21;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -153,6 +154,7 @@ module tt_um_aiju (
 	wire iSTA = rIR == 8'h32;
 	wire iLHLD = rIR == 8'h2A;
 	wire iSHLD = rIR == 8'h22;
+	wire iUNARY = (rIR & ~8'h38) == 8'b0000_0111;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -171,13 +173,14 @@ module tt_um_aiju (
 		iHALT: decode_goto = CPU_HALT;
 		iLXI: decode_goto = CPU_LXI0;
 		iLDA, iSTA, iLHLD, iSHLD: decode_goto = CPU_DIRECT0;
+		iUNARY: decode_goto = CPU_UNARY;
 		endcase
 	end
 
 	reg [7:0] aluIn;
 	reg [7:0] aluOut;
 	reg alu_carry_out, alu_aux_carry_out;
-	reg [3:0] alu_op;
+	reg [4:0] alu_op;
 	reg [7:0] set_flags;
 	localparam ALU_ADD = 0;
 	localparam ALU_ADC = 1;
@@ -187,7 +190,15 @@ module tt_um_aiju (
 	localparam ALU_XOR = 5;
 	localparam ALU_OR = 6;
 	localparam ALU_CMP = 7;
-	localparam ALU_NOP = 15;
+	localparam ALU_RLC = 8;
+	localparam ALU_RRC = 9;
+	localparam ALU_RAL = 10;
+	localparam ALU_RAR = 11;
+	localparam ALU_DAA = 12;
+	localparam ALU_CMA = 13;
+	localparam ALU_STC = 14;
+	localparam ALU_CMC = 15;
+	localparam ALU_NOP = 31;
 
 	always @(*) begin
 		alu_carry_out = 1'b0;
@@ -210,6 +221,47 @@ module tt_um_aiju (
 			aluOut = rA | aluIn;
 		ALU_XOR:
 			aluOut = rA ^ aluIn;
+		ALU_RLC: begin
+			aluOut = {rA[6:0], rA[7]};
+			alu_carry_out = rA[7];
+		end
+		ALU_RRC: begin
+			aluOut = {rA[0], rA[7:1]};
+			alu_carry_out = rA[0];
+		end
+		ALU_RAL: begin
+			{alu_carry_out, aluOut} = {rA, rPSR[0]};
+		end
+		ALU_RAR: begin
+			{aluOut, alu_carry_out} = {rPSR[0], rA};
+		end
+		ALU_CMA: aluOut = ~rA;
+		ALU_CMC: begin
+			aluOut = rA;
+			alu_carry_out = ~rPSR[0];
+		end
+		ALU_STC: begin
+			aluOut = rA;
+			alu_carry_out = 1'b1;
+		end
+		ALU_DAA: begin : daa
+			reg [7:0] a;
+
+			if(rA[3:0] > 9 || rPSR[4]) begin
+				a = rA + 6;
+				alu_aux_carry_out = rA[3:0] > 9;
+			end else begin
+				a = rA;
+				alu_aux_carry_out = 1'b0;
+			end
+			if(a[7:4] > 9 || rPSR[0]) begin
+				aluOut = a + 8'h60;
+				alu_carry_out = a[7:4] > 9;
+			end else begin
+				aluOut = a;
+				alu_carry_out = 1'b0;
+			end
+		end
 		endcase
 	end
 	wire alu_zero = aluOut == 0;
@@ -374,6 +426,8 @@ module tt_um_aiju (
 						state <= CPU_FETCH;
 				CPU_DIRECT3:
 					state <= CPU_FETCH;
+				CPU_UNARY:
+					state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -508,6 +562,16 @@ module tt_um_aiju (
 				db_src = DB_MEM;
 				db_dst = DB_H;
 			end
+		end
+		CPU_UNARY: begin
+			db_src = DB_ALU;
+			db_dst = DB_A;
+			alu_op = {1'b1, rIR[5:3]};
+			case(rIR[5:3])
+			4: set_flags = 8'hff;
+			5: set_flags = 0;
+			default: set_flags = 1;
+			endcase
 		end
 		endcase
 	end

@@ -334,6 +334,44 @@ class CPU:
     addr = await self.fetch16()
     await self.write(addr, self.rL)
     await self.write(addr + 1, self.rH)
+  @instruction(0x07)
+  async def iRLC(self):
+    self.flags(0, C=(self.rA & 0x80) != 0)
+    self.rA = (self.rA << 1) & 0xff | self.rA >> 7
+  @instruction(0x0f)
+  async def iRRC(self):
+    self.flags(0, C=(self.rA & 1) != 0)
+    self.rA = (self.rA >> 1 | self.rA << 7) & 0xff
+  @instruction(0x17)
+  async def iRAL(self):
+    c = self.rPSR & 1
+    self.flags(0, C=(self.rA & 0x80) != 0)
+    self.rA = (self.rA << 1 | c) & 0xff
+  @instruction(0x1f)
+  async def iRAR(self):
+    c = self.rPSR & 1
+    self.flags(0, C=(self.rA & 1) != 0)
+    self.rA = (self.rA >> 1 | c << 7) & 0xff
+  @instruction(0x27)
+  async def iDAA(self):
+    half_carry = False
+    carry = False
+    if (self.rA & 0x0f) > 9 or (self.rPSR & FLAGH) != 0:
+      half_carry = (self.rA & 0x0f) > 9
+      self.rA = (self.rA + 6) & 0xff
+    if (self.rA & 0xf0) > 0x90 or (self.rPSR & FLAGC) != 0:
+      carry = (self.rA & 0xf0) > 0x90
+      self.rA = (self.rA + 0x60) & 0xff
+    self.flags(self.rA, S='S', Z='Z', P='P', C=carry, H=half_carry)
+  @instruction(0x2f)
+  async def iCMA(self):
+    self.rA ^= 0xff
+  @instruction(0x37)
+  async def iSTC(self):
+    self.flags(0, C=True)
+  @instruction(0x3f)
+  async def iCMC(self):
+    self.rPSR ^= FLAGC
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -426,6 +464,12 @@ async def test_LHLD(dut, codegen):
 @test()
 async def test_SHLD(dut, codegen):
   codegen.test_code([0x22, random.randint(0, 255), random.randint(0, 255)])
+
+@test()
+async def test_UNARY(dut, codegen):
+  for op in range(8):
+    for n in range(20):
+      codegen.test_code([0x07 | op << 3])
 
 @test()
 async def test_ALU(dut, codegen):
