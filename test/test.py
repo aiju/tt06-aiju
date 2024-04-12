@@ -299,6 +299,23 @@ class CPU:
   async def iPOP_AF(self):
     self.rPSR = (await self.pop()) & ~0x28 | 2
     self.rA = await self.pop()
+  @instruction(0x01)
+  async def iLXI_BC(self):
+    self.rC = await self.fetch()
+    self.rB = await self.fetch()
+  @instruction(0x11)
+  async def iLXI_DE(self):
+    self.rE = await self.fetch()
+    self.rD = await self.fetch()
+  @instruction(0x21)
+  async def iLXI_HL(self):
+    self.rL = await self.fetch()
+    self.rH = await self.fetch()
+  @instruction(0x31)
+  async def iLXI_SP(self):
+    lo = await self.fetch()
+    hi = await self.fetch()
+    self.rSP = lo | hi << 8
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -389,3 +406,8 @@ async def test_ALU_imm(dut, codegen):
   for op in range(8):
     for r in range(20):
       codegen.test_code([0xc6 | op << 3])
+
+@test()
+async def test_LXI(dut, codegen):
+  for r in range(4):
+      codegen.test_code([0x01 | r << 4, random.randint(0, 255), random.randint(0, 255)])

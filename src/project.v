@@ -132,6 +132,8 @@ module tt_um_aiju (
 	localparam CPU_POP0 = 12;
 	localparam CPU_POP1 = 13;
 	localparam CPU_HALT = 14;
+	localparam CPU_LXI0 = 15;
+	localparam CPU_LXI1 = 16;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -141,6 +143,7 @@ module tt_um_aiju (
 	wire iPUSH = (rIR & ~8'h30) == 8'b1100_0101;
 	wire iPOP = (rIR & ~8'h30) == 8'b1100_0001;
 	wire iHALT = rIR == 8'h76;
+	wire iLXI = (rIR & ~8'h30) == 8'b0000_0001;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -157,6 +160,7 @@ module tt_um_aiju (
 		iPUSH: decode_goto = CPU_PUSH0;
 		iPOP: decode_goto = CPU_POP0;
 		iHALT: decode_goto = CPU_HALT;
+		iLXI: decode_goto = CPU_LXI0;
 		endcase
 	end
 
@@ -206,7 +210,8 @@ module tt_um_aiju (
 	wire cycle_done = !memory_read && !memory_write || memory_done;
 	wire pc_increment =
 		state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0
-		|| state == CPU_ALU0 && iALUI;
+		|| state == CPU_ALU0 && iALUI
+		|| state == CPU_LXI0 || state == CPU_LXI1;
 	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1;
 	wire sp_increment = state == CPU_POP0 || state == CPU_POP1;
 	wire pc_jmp = state == CPU_JMP1;
@@ -215,12 +220,19 @@ module tt_um_aiju (
 	reg [3:0] db_dst;
 	reg [3:0] db_src;
 
+	localparam DB_SPL = 4'b0100;
+	localparam DB_SPH = 4'b0101;
+	localparam DB_PSR = 4'b0110;
+	localparam DB_ALU = 4'b0111;
+	localparam DB_MEM = 4'b1110;
+	localparam DB_A = 4'b1111;
+
 	reg [7:0] DB;
 	always @(*) begin
 		DB = 8'bx;
 		case(db_src)
-		4'b0110: DB = rPSR;
-		4'b0111: DB = aluOut;
+		DB_PSR: DB = rPSR;
+		DB_ALU: DB = aluOut;
 		4'b1000: DB = rB;
 		4'b1001: DB = rC;
 		4'b1010: DB = rD;
@@ -245,6 +257,10 @@ module tt_um_aiju (
 					rPC <= {memory_rdata, aluIn};
 				if(ir_load)
 					rIR <= memory_rdata;
+				if(db_dst == DB_SPH)
+					rSP[15:8] = DB;
+				if(db_dst == DB_SPL)
+					rSP[7:0] = DB;
 				if(sp_increment)
 					rSP <= rSP + 1;
 				if(sp_decrement)
@@ -258,7 +274,7 @@ module tt_um_aiju (
 			rPSR <= 2;
 		end else begin
 			if(cycle_done) begin
-				if(db_dst == 4'b0110)
+				if(db_dst == DB_PSR)
 					rPSR <= DB & ~8'h28 | 2;
 				else
 					rPSR <= (rPSR & ~set_flags | alu_flags & set_flags) & ~8'h28 | 2;
@@ -273,7 +289,7 @@ module tt_um_aiju (
 		end else begin
 			if(cycle_done) begin
 				case(db_dst)
-				4'b0111: aluIn <= DB;
+				DB_ALU: aluIn <= DB;
 				4'b1000: rB <= DB;
 				4'b1001: rC <= DB;
 				4'b1010: rD <= DB;
@@ -320,6 +336,10 @@ module tt_um_aiju (
 					state <= CPU_POP1;
 				CPU_POP1:
 					state <= CPU_FETCH;
+				CPU_LXI0:
+					state <= CPU_LXI1;
+				CPU_LXI1:
+					state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -331,7 +351,7 @@ module tt_um_aiju (
 		memory_read = 1'b0;
 		memory_write = 1'b0;
 		case(state)
-		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1: begin
+		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1, CPU_LXI0, CPU_LXI1: begin
 			memory_addr = rPC;
 			memory_read = 1'b1;
 		end
@@ -380,39 +400,46 @@ module tt_um_aiju (
 			db_dst = {1'b1, rIR[5:3]};
 		end
 		CPU_MVI0: begin
-			db_src = 4'b1110;
-			db_dst = memory_operand ? 4'b0111 : {1'b1, rIR[5:3]};
+			db_src = DB_MEM;
+			db_dst = memory_operand ? DB_ALU : {1'b1, rIR[5:3]};
 		end
 		CPU_MVI1: begin
-			db_src = 4'b0111;
+			db_src = DB_ALU;
 		end
 		CPU_ALU0: begin
-			db_src = iALUI ? 4'b1110 : {1'b1, rIR[2:0]};
-			db_dst = 4'b0111;
+			db_src = iALUI ? DB_MEM : {1'b1, rIR[2:0]};
+			db_dst = DB_ALU;
 		end
 		CPU_ALU1: begin
-			db_src = 4'b0111;
+			db_src = DB_ALU;
 			if(rIR[5:3] != 3'b111)
-				db_dst = 4'b1111;
+				db_dst = DB_A;
 			alu_op = rIR[5:3];
 			set_flags = 8'hff;
 		end
 		CPU_JMP0: begin
-			db_src = 4'b1110;
-			db_dst = 4'b0111;
+			db_src = DB_MEM;
+			db_dst = DB_ALU;
 		end
 		CPU_PUSH1, CPU_PUSH2: begin
 			if(rIR[5:4] == 3)
-				db_src = state == CPU_PUSH1 ? 4'b1111 : 4'b0110;
+				db_src = state == CPU_PUSH1 ? DB_A : DB_PSR;
 			else
 				db_src = {1'b1, rIR[5:4], state == CPU_PUSH2};
 		end
 		CPU_POP0, CPU_POP1: begin
-			db_src = 4'b1110;
+			db_src = DB_MEM;
 			if(rIR[5:4] == 3)
-				db_dst = state == CPU_POP1 ? 4'b1111 : 4'b0110;
+				db_dst = state == CPU_POP1 ? DB_A : DB_PSR;
 			else
 				db_dst = {1'b1, rIR[5:4], state == CPU_POP0};
+		end
+		CPU_LXI0, CPU_LXI1: begin
+			db_src = DB_MEM;
+			if(rIR[5:4] == 3)
+				db_dst = state == CPU_LXI1 ? DB_SPH : DB_SPL;
+			else
+				db_dst = {1'b1, rIR[5:4], state != CPU_LXI1};
 		end
 		endcase
 	end
