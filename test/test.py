@@ -199,6 +199,10 @@ class CPU:
     data = await self.read(self.rPC)
     self.rPC += 1
     return data
+  async def fetch16(self):
+    lo = await self.fetch()
+    hi = await self.fetch()
+    return lo | hi << 8
   async def step(self):
     if self.halted:
       return False
@@ -313,9 +317,23 @@ class CPU:
     self.rH = await self.fetch()
   @instruction(0x31)
   async def iLXI_SP(self):
-    lo = await self.fetch()
-    hi = await self.fetch()
-    self.rSP = lo | hi << 8
+    self.rSP = await self.fetch16()
+  @instruction(0x3a)
+  async def iLDA(self):
+    self.rA = await self.read(await self.fetch16())
+  @instruction(0x32)
+  async def iLDA(self):
+    await self.write(await self.fetch16(), self.rA)
+  @instruction(0x2a)
+  async def iLHLD(self):
+    addr = await self.fetch16()
+    self.rL = await self.read(addr)
+    self.rH = await self.read(addr + 1)
+  @instruction(0x22)
+  async def iSTHD(self):
+    addr = await self.fetch16()
+    await self.write(addr, self.rL)
+    await self.write(addr + 1, self.rH)
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -392,6 +410,22 @@ async def test_PUSH_POP(dut, codegen):
 @test()
 async def test_JUMP(dut, codegen):
   codegen.test_code([0xc3, 0xbe, 0xba], jump=0xbabe)
+
+@test()
+async def test_LDA(dut, codegen):
+  codegen.test_code([0x3a, random.randint(0, 255), random.randint(0, 255)])
+
+@test()
+async def test_STA(dut, codegen):
+  codegen.test_code([0x32, random.randint(0, 255), random.randint(0, 255)])
+
+@test()
+async def test_LHLD(dut, codegen):
+  codegen.test_code([0x2a, random.randint(0, 255), random.randint(0, 255)])
+
+@test()
+async def test_SHLD(dut, codegen):
+  codegen.test_code([0x22, random.randint(0, 255), random.randint(0, 255)])
 
 @test()
 async def test_ALU(dut, codegen):

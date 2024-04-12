@@ -111,6 +111,7 @@ module tt_um_aiju (
 		endcase
 	end
 
+	reg [15:0] AL;
 	reg [15:0] rPC;
 	reg [15:0] rSP;
 	reg [7:0] rA, rB, rC, rD, rE, rH, rL;
@@ -134,6 +135,10 @@ module tt_um_aiju (
 	localparam CPU_HALT = 14;
 	localparam CPU_LXI0 = 15;
 	localparam CPU_LXI1 = 16;
+	localparam CPU_DIRECT0 = 17;
+	localparam CPU_DIRECT1 = 18;
+	localparam CPU_DIRECT2 = 19;
+	localparam CPU_DIRECT3 = 20;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -144,6 +149,10 @@ module tt_um_aiju (
 	wire iPOP = (rIR & ~8'h30) == 8'b1100_0001;
 	wire iHALT = rIR == 8'h76;
 	wire iLXI = (rIR & ~8'h30) == 8'b0000_0001;
+	wire iLDA = rIR == 8'h3A;
+	wire iSTA = rIR == 8'h32;
+	wire iLHLD = rIR == 8'h2A;
+	wire iSHLD = rIR == 8'h22;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -161,6 +170,7 @@ module tt_um_aiju (
 		iPOP: decode_goto = CPU_POP0;
 		iHALT: decode_goto = CPU_HALT;
 		iLXI: decode_goto = CPU_LXI0;
+		iLDA, iSTA, iLHLD, iSHLD: decode_goto = CPU_DIRECT0;
 		endcase
 	end
 
@@ -211,7 +221,9 @@ module tt_um_aiju (
 	wire pc_increment =
 		state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0
 		|| state == CPU_ALU0 && iALUI
-		|| state == CPU_LXI0 || state == CPU_LXI1;
+		|| state == CPU_LXI0 || state == CPU_LXI1
+		|| state == CPU_DIRECT0 || state == CPU_DIRECT1;
+	wire al_increment = state == CPU_DIRECT2;
 	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1;
 	wire sp_increment = state == CPU_POP0 || state == CPU_POP1;
 	wire pc_jmp = state == CPU_JMP1;
@@ -220,11 +232,15 @@ module tt_um_aiju (
 	reg [3:0] db_dst;
 	reg [3:0] db_src;
 
+	localparam DB_ALL = 4'b0010;
+	localparam DB_ALH = 4'b0011;
 	localparam DB_SPL = 4'b0100;
 	localparam DB_SPH = 4'b0101;
 	localparam DB_PSR = 4'b0110;
 	localparam DB_ALU = 4'b0111;
 	localparam DB_MEM = 4'b1110;
+	localparam DB_H = 4'b1100;
+	localparam DB_L = 4'b1101;
 	localparam DB_A = 4'b1111;
 
 	reg [7:0] DB;
@@ -249,6 +265,7 @@ module tt_um_aiju (
 			rPC <= 0;
 			rIR <= 0;
 			rSP <= 0;
+			AL <= 0;
 		end else begin
 			if(cycle_done) begin
 				if(pc_increment)
@@ -258,13 +275,19 @@ module tt_um_aiju (
 				if(ir_load)
 					rIR <= memory_rdata;
 				if(db_dst == DB_SPH)
-					rSP[15:8] = DB;
+					rSP[15:8] <= DB;
 				if(db_dst == DB_SPL)
-					rSP[7:0] = DB;
+					rSP[7:0] <= DB;
 				if(sp_increment)
 					rSP <= rSP + 1;
 				if(sp_decrement)
 					rSP <= rSP - 1;
+				if(db_dst == DB_ALH)
+					AL[15:8] <= DB;
+				if(db_dst == DB_ALL)
+					AL[7:0] <= DB;
+				if(al_increment)
+					AL <= AL + 1;
 			end
 		end
 	end
@@ -340,6 +363,17 @@ module tt_um_aiju (
 					state <= CPU_LXI1;
 				CPU_LXI1:
 					state <= CPU_FETCH;
+				CPU_DIRECT0:
+					state <= CPU_DIRECT1;
+				CPU_DIRECT1:
+					state <= CPU_DIRECT2;
+				CPU_DIRECT2:
+					if(iLHLD || iSHLD)
+						state <= CPU_DIRECT3;
+					else
+						state <= CPU_FETCH;
+				CPU_DIRECT3:
+					state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -351,7 +385,7 @@ module tt_um_aiju (
 		memory_read = 1'b0;
 		memory_write = 1'b0;
 		case(state)
-		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1, CPU_LXI0, CPU_LXI1: begin
+		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1, CPU_LXI0, CPU_LXI1, CPU_DIRECT0, CPU_DIRECT1: begin
 			memory_addr = rPC;
 			memory_read = 1'b1;
 		end
@@ -385,6 +419,12 @@ module tt_um_aiju (
 		CPU_POP0, CPU_POP1: begin
 			memory_addr = rSP;
 			memory_read = 1'b1;
+		end
+		CPU_DIRECT2, CPU_DIRECT3: begin
+			memory_addr = AL;
+			memory_read = iLDA || iLHLD;
+			memory_write = iSTA || iSHLD;
+			memory_wdata = DB;
 		end
 		endcase
 	end
@@ -440,6 +480,34 @@ module tt_um_aiju (
 				db_dst = state == CPU_LXI1 ? DB_SPH : DB_SPL;
 			else
 				db_dst = {1'b1, rIR[5:4], state != CPU_LXI1};
+		end
+		CPU_DIRECT0, CPU_DIRECT1: begin
+			db_src = DB_MEM;
+			db_dst = state == CPU_DIRECT1 ? DB_ALH : DB_ALL;
+		end
+		CPU_DIRECT2: begin
+			case(1'b1)
+			iSTA:
+				db_src = DB_A;
+			iLDA: begin
+				db_src = DB_MEM;
+				db_dst = DB_A;
+			end
+			iSHLD:
+				db_src = DB_L;
+			iLHLD: begin
+				db_src = DB_MEM;
+				db_dst = DB_L;
+			end
+			endcase
+		end
+		CPU_DIRECT3: begin
+			if(iSHLD)
+				db_src = DB_H;
+			else begin
+				db_src = DB_MEM;
+				db_dst = DB_H;
+			end
 		end
 		endcase
 	end
