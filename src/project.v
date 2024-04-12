@@ -168,6 +168,10 @@ module tt_um_aiju (
 	localparam ALU_ADC = 1;
 	localparam ALU_SUB = 2;
 	localparam ALU_SBB = 3;
+	localparam ALU_AND = 4;
+	localparam ALU_XOR = 5;
+	localparam ALU_OR = 6;
+	localparam ALU_CMP = 7;
 	localparam ALU_NOP = 15;
 
 	always @(*) begin
@@ -179,10 +183,18 @@ module tt_um_aiju (
 			{alu_carry_out, aluOut} = rA + aluIn + (rPSR[0] & (alu_op == ALU_ADC));
 			alu_aux_carry_out = (((rA & 15) + (aluIn & 15) + (rPSR[0] & (alu_op == ALU_ADC))) & 16) != 0;
 		end
-		ALU_SUB, ALU_SBB: begin
+		ALU_SUB, ALU_SBB, ALU_CMP: begin
 			{alu_carry_out, aluOut} = rA - aluIn - (rPSR[0] & (alu_op == ALU_SBB));
 			alu_aux_carry_out = (((rA & 15) - (aluIn & 15) - (rPSR[0] & (alu_op == ALU_SBB))) & 16) != 0;
 		end
+		ALU_AND: begin
+			aluOut = rA & aluIn;
+			alu_aux_carry_out = rA[3] | aluIn[3];
+		end
+		ALU_OR:
+			aluOut = rA | aluIn;
+		ALU_XOR:
+			aluOut = rA ^ aluIn;
 		endcase
 	end
 	wire alu_zero = aluOut == 0;
@@ -374,7 +386,8 @@ module tt_um_aiju (
 		end
 		CPU_ALU1: begin
 			db_src = 4'b0111;
-			db_dst = 4'b1111;
+			if(rIR[5:3] != 3'b111)
+				db_dst = 4'b1111;
 			alu_op = rIR[5:3];
 			set_flags = 8'hff;
 		end

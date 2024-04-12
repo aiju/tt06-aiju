@@ -255,6 +255,27 @@ class CPU:
     (result, carry, half_carry) = subtraction(self.rA, data, (self.rPSR & FLAGC) != 0)
     self.rA = result
     self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
+  @instruction(0xa0, {'src':(2,0)})
+  async def iANA(self, src):
+    data = await self.getRegM(src)
+    half_carry = ((self.rA | data) & 8) != 0
+    self.rA &= data
+    self.flags(self.rA, S='S', Z='Z', P='P', C=False, H=half_carry)
+  @instruction(0xb0, {'src':(2,0)})
+  async def iORA(self, src):
+    data = await self.getRegM(src)
+    self.rA |= data
+    self.flags(self.rA, S='S', Z='Z', P='P', C=False, H=False)
+  @instruction(0xa8, {'src':(2,0)})
+  async def iXRA(self, src):
+    data = await self.getRegM(src)
+    self.rA ^= data
+    self.flags(self.rA, S='S', Z='Z', P='P', C=False, H=False)
+  @instruction(0xb8, {'src':(2,0)})
+  async def iCMP(self, src):
+    data = await self.getRegM(src)
+    (result, carry, half_carry) = subtraction(self.rA, data, False)
+    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
   @instruction(0xc3)
   async def iJMP(self):
     pcL = await self.read(self.rPC)
@@ -372,7 +393,7 @@ async def test_JUMP(dut, codegen):
 
 @test()
 async def test_ALU(dut, codegen):
-  for op in range(4):
+  for op in range(8):
     for r in range(8):
       codegen.test_code([0x80 | op << 3 | r])
     for r in range(20):
