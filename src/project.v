@@ -157,6 +157,9 @@ module tt_um_aiju_8080 (
 	localparam CPU_INXDCX1 = 36;
 	localparam CPU_INXDCX2 = 37;
 	localparam CPU_INXDCX3 = 38;
+	localparam CPU_LDAXSTAX0 = 39;
+	localparam CPU_LDAXSTAX1 = 40;
+	localparam CPU_LDAXSTAX2 = 41;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -186,6 +189,8 @@ module tt_um_aiju_8080 (
 	wire iDCX = (rIR & ~8'h30) == 8'b0000_1011;
 	wire iINX_SP = rIR == 8'b0011_0011;
 	wire iDCX_SP = rIR == 8'b0011_1011;
+	wire iLDAX = (rIR & ~8'h10) == 8'b0000_1010;
+	wire iSTAX = (rIR & ~8'h10) == 8'b0000_0010;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -226,6 +231,7 @@ module tt_um_aiju_8080 (
 		iSPHL: decode_goto = CPU_SPHL0;
 		iINR, iDCR: decode_goto = CPU_INRDCR0;
 		iINX, iDCX: decode_goto = CPU_INXDCX0;
+		iLDAX, iSTAX: decode_goto = CPU_LDAXSTAX0;
 		endcase
 	end
 
@@ -551,6 +557,12 @@ module tt_um_aiju_8080 (
 					state <= CPU_INXDCX3;
 				CPU_INXDCX3:
 					state <= CPU_FETCH;
+				CPU_LDAXSTAX0:
+					state <= CPU_LDAXSTAX1;
+				CPU_LDAXSTAX1:
+					state <= CPU_LDAXSTAX2;
+				CPU_LDAXSTAX2:
+					state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -619,6 +631,12 @@ module tt_um_aiju_8080 (
 				memory_read = state == CPU_INRDCR0;
 				memory_write = state == CPU_INRDCR1;
 			end
+		end
+		CPU_LDAXSTAX2: begin
+			memory_addr = AL;
+			memory_read = iLDAX;
+			memory_write = iSTAX;
+			memory_wdata = DB;
 		end
 		endcase
 	end
@@ -759,6 +777,17 @@ module tt_um_aiju_8080 (
 			db_src = DB_ALU;
 			db_dst = {1'b1, rIR[5:4], state == CPU_INXDCX1};
 			alu_op = iDCX ? ALU_DEC : ALU_INC;
+		end
+		CPU_LDAXSTAX0, CPU_LDAXSTAX1: begin
+			db_src = {1'b1, 1'b0, rIR[4], state == CPU_LDAXSTAX0};
+			db_dst = state == CPU_LDAXSTAX1 ? DB_ALH : DB_ALL;
+		end
+		CPU_LDAXSTAX2: begin
+			if(iLDAX) begin
+				db_src = DB_MEM;
+				db_dst = DB_A;
+			end else
+				db_src = DB_A;
 		end
 		endcase
 	end

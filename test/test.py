@@ -322,7 +322,7 @@ class CPU:
   async def iLDA(self):
     self.rA = await self.read(await self.fetch16())
   @instruction(0x32)
-  async def iLDA(self):
+  async def iSTA(self):
     await self.write(await self.fetch16(), self.rA)
   @instruction(0x2a)
   async def iLHLD(self):
@@ -464,6 +464,18 @@ class CPU:
   @instruction(0x3B)
   async def iDCX_SP(self):
     self.rSP = (self.rSP - 1) & 0xffff
+  @instruction(0x0a)
+  async def iLDAX_BC(self):
+    self.rA = await self.read(self.rC | self.rB << 8)
+  @instruction(0x1a)
+  async def iLDAX_DE(self):
+    self.rA = await self.read(self.rE | self.rD << 8)
+  @instruction(0x02)
+  async def iSTAX_BC(self):
+    await self.write(self.rC | self.rB << 8, self.rA)
+  @instruction(0x12)
+  async def iSTAX_DE(self):
+    await self.write(self.rE | self.rD << 8, self.rA)
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -638,6 +650,12 @@ async def test_INX_DCX(dut, codegen):
     for r in range(4):
       codegen.test_code([0x03 | op | r << 4])
       codegen.test_code([0x0E | r << 4, 0xFF, 0x03 | op | r << 4])
+
+@test()
+async def test_LDAX_STAX(dut, codegen):
+  for op in range(2):
+    for r in range(2):
+      codegen.test_code([0x02 | op << 3 | r << 4])
 
 @test()
 async def test_ALU(dut, codegen):
