@@ -21,12 +21,13 @@ module tt_um_aiju (
 	reg [15:0] memory_addr;
 	wire [7:0] memory_rdata;
 	reg [7:0] memory_wdata;
+	wire halted;
 
 	// TODO: synchroniser
 	wire handshake_in;
 	reg handshake_out;
 	assign handshake_in = ui_in[0];
-	assign uo_out = {memory_read, memory_write, handshake_out};
+	assign uo_out = {halted, memory_read, memory_write, handshake_out};
 	reg handshake_valid, handshake_ready;
 	reg handshake_state;
 	always @(posedge clk or negedge rst_n) begin
@@ -115,7 +116,7 @@ module tt_um_aiju (
 	reg [7:0] rA, rB, rC, rD, rE, rH, rL;
 	reg [7:0] rPSR;
 	reg [7:0] rIR;
-	reg [3:0] state;
+	reg [4:0] state;
 	localparam CPU_FETCH = 0;
 	localparam CPU_DECODE = 1;
 	localparam CPU_MVI0 = 2;
@@ -128,18 +129,23 @@ module tt_um_aiju (
 	localparam CPU_PUSH0 = 9;
 	localparam CPU_PUSH1 = 10;
 	localparam CPU_PUSH2 = 11;
+	localparam CPU_POP0 = 12;
+	localparam CPU_POP1 = 13;
+	localparam CPU_HALT = 14;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
 	wire iMVI = rIR[7:6] == 0 && rIR[2:0] == 3'b110;
 	wire iJMP = rIR == 8'b1100_0011;
 	wire iPUSH = (rIR & ~8'h30) == 8'b1100_0101;
+	wire iPOP = (rIR & ~8'h30) == 8'b1100_0001;
+	wire iHALT = rIR == 8'h76;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
 		|| iMVI && rIR[5:3] == 3'b110;
 
-	reg [3:0] decode_goto;
+	reg [4:0] decode_goto;
 	always @(*) begin
 		decode_goto = CPU_FETCH;
 		case(1'b1)
@@ -148,6 +154,8 @@ module tt_um_aiju (
 		iMVI: decode_goto = CPU_MVI0;
 		iJMP: decode_goto = CPU_JMP0;
 		iPUSH: decode_goto = CPU_PUSH0;
+		iPOP: decode_goto = CPU_POP0;
+		iHALT: decode_goto = CPU_HALT;
 		endcase
 	end
 
@@ -177,8 +185,10 @@ module tt_um_aiju (
 
 	wire pc_increment = (state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0) && memory_done;
 	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1 && memory_done;
+	wire sp_increment = (state == CPU_POP0 || state == CPU_POP1) && memory_done;
 	wire pc_jmp = state == CPU_JMP1 && memory_done;
 	wire ir_load = state == CPU_FETCH && memory_done;
+	assign halted = state == CPU_HALT;
 	reg [3:0] db_dst;
 	reg [3:0] db_src;
 
@@ -211,6 +221,8 @@ module tt_um_aiju (
 				rPC <= {memory_rdata, aluIn};
 			if(ir_load)
 				rIR <= memory_rdata;
+			if(sp_increment)
+				rSP <= rSP + 1;
 			if(sp_decrement)
 				rSP <= rSP - 1;
 		end
@@ -280,6 +292,12 @@ module tt_um_aiju (
 			CPU_PUSH2:
 				if(memory_done)
 					state <= CPU_FETCH;
+			CPU_POP0:
+				if(memory_done)
+					state <= CPU_POP1;
+			CPU_POP1:
+				if(memory_done)
+					state <= CPU_FETCH;
 			endcase
 		end
 	end
@@ -317,6 +335,10 @@ module tt_um_aiju (
 			memory_addr = rSP;
 			memory_wdata = DB;
 			memory_write = 1'b1;
+		end
+		CPU_POP0, CPU_POP1: begin
+			memory_addr = rSP;
+			memory_read = 1'b1;
 		end
 		endcase
 	end
@@ -357,6 +379,13 @@ module tt_um_aiju (
 				db_src = state == CPU_PUSH1 ? 4'b1111 : 4'b0110;
 			else
 				db_src = {1'b1, rIR[5:4], state == CPU_PUSH2};
+		end
+		CPU_POP0, CPU_POP1: begin
+			db_src = 4'b1110;
+			if(rIR[5:4] == 3)
+				db_dst = state == CPU_POP1 ? 4'b1111 : 4'b0110;
+			else
+				db_dst = {1'b1, rIR[5:4], state == CPU_POP0};
 		end
 		endcase
 	end
