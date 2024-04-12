@@ -413,6 +413,57 @@ class CPU:
   @instruction(0xe9)
   async def iPCHL(self):
     self.rPC = self.rL | self.rH << 8
+  @instruction(0xf9)
+  async def iSPHL(self):
+    self.rSP = self.rL | self.rH << 8
+  @instruction(0x04, {'r':(5,3)})
+  async def iINR(self, r):
+    data = await self.getRegM(r)
+    (data, _, half_carry) = addition(data, 1, False)
+    await self.setRegM(r, data)
+    self.flags(data, S='S', Z='Z', P='P', H=half_carry)
+  @instruction(0x05, {'r':(5,3)})
+  async def iDCR(self, r):
+    data = await self.getRegM(r)
+    (data, _, half_carry) = subtraction(data, 1, False)
+    await self.setRegM(r, data)
+    self.flags(data, S='S', Z='Z', P='P', H=half_carry)
+  @instruction(0x03)
+  async def iINX_BC(self):
+    self.rC = (self.rC + 1) & 0xff
+    if self.rC == 0:
+      self.rB = (self.rB + 1) & 0xff
+  @instruction(0x13)
+  async def iINX_DE(self):
+    self.rE = (self.rE + 1) & 0xff
+    if self.rE == 0:
+      self.rD = (self.rD + 1) & 0xff
+  @instruction(0x23)
+  async def iINX_HL(self):
+    self.rL = (self.rL + 1) & 0xff
+    if self.rL == 0:
+      self.rH = (self.rH + 1) & 0xff
+  @instruction(0x33)
+  async def iINX_SP(self):
+    self.rSP = (self.rSP + 1) & 0xffff
+  @instruction(0x0B)
+  async def iDCX_BC(self):
+    self.rC = (self.rC - 1) & 0xff
+    if self.rC == 0xff:
+      self.rB = (self.rB + 1) & 0xff
+  @instruction(0x1B)
+  async def iDCX_DE(self):
+    self.rE = (self.rE - 1) & 0xff
+    if self.rE == 0xff:
+      self.rD = (self.rD + 1) & 0xff
+  @instruction(0x2B)
+  async def iDCX_HL(self):
+    self.rL = (self.rL - 1) & 0xff
+    if self.rL == 0xff:
+      self.rH = (self.rH + 1) & 0xff
+  @instruction(0x3B)
+  async def iDCX_SP(self):
+    self.rSP = (self.rSP - 1) & 0xffff
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -550,6 +601,10 @@ async def test_PCHL(dut, codegen):
   codegen.test_code([0x21, 0xbe, 0xba, 0xe9], jump=0xbabe)
 
 @test()
+async def test_SPHL(dut, codegen):
+  codegen.test_code([0xf9])
+
+@test()
 async def test_LDA(dut, codegen):
   codegen.test_code([0x3a, random.randint(0, 255), random.randint(0, 255)])
 
@@ -570,6 +625,19 @@ async def test_UNARY(dut, codegen):
   for op in range(8):
     for n in range(20):
       codegen.test_code([0x07 | op << 3])
+
+@test()
+async def test_INR_DCR(dut, codegen):
+  for op in range(2):
+    for r in range(8):
+      codegen.test_code([0x04 | op | r << 3])
+
+@test()
+async def test_INX_DCX(dut, codegen):
+  for op in range(2):
+    for r in range(4):
+      codegen.test_code([0x03 | op | r << 4])
+      codegen.test_code([0x0E | r << 4, 0xFF, 0x03 | op | r << 4])
 
 @test()
 async def test_ALU(dut, codegen):

@@ -117,7 +117,7 @@ module tt_um_aiju_8080 (
 	reg [7:0] rA, rB, rC, rD, rE, rH, rL;
 	reg [7:0] rPSR;
 	reg [7:0] rIR;
-	reg [4:0] state;
+	reg [5:0] state;
 	localparam CPU_FETCH = 0;
 	localparam CPU_DECODE = 1;
 	localparam CPU_MVI0 = 2;
@@ -149,6 +149,14 @@ module tt_um_aiju_8080 (
 	localparam CPU_PCHL0 = 28;
 	localparam CPU_PCHL1 = 29;
 	localparam CPU_PCHL2 = 30;
+	localparam CPU_SPHL0 = 31;
+	localparam CPU_SPHL1 = 32;
+	localparam CPU_INRDCR0 = 33;
+	localparam CPU_INRDCR1 = 34;
+	localparam CPU_INXDCX0 = 35;
+	localparam CPU_INXDCX1 = 36;
+	localparam CPU_INXDCX2 = 37;
+	localparam CPU_INXDCX3 = 38;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -171,10 +179,17 @@ module tt_um_aiju_8080 (
 	wire iRETcc = (rIR & ~8'h30) == 8'b1100_0000;
 	wire iJMPcc = (rIR & ~8'h30) == 8'b1100_0010;
 	wire iPCHL = rIR == 8'hE9;
+	wire iSPHL = rIR == 8'hF9;
+	wire iINR = (rIR & ~8'h38) == 8'b0000_0100;
+	wire iDCR = (rIR & ~8'h38) == 8'b0000_0101;
+	wire iINX = (rIR & ~8'h30) == 8'b0000_0011;
+	wire iDCX = (rIR & ~8'h30) == 8'b0000_1011;
+	wire iINX_SP = rIR == 8'b0011_0011;
+	wire iDCX_SP = rIR == 8'b0011_1011;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
-		|| iMVI && rIR[5:3] == 3'b110;
+		|| (iINR || iDCR || iMVI) && rIR[5:3] == 3'b110;
 
 	reg condition;
 	always @(*) begin
@@ -190,7 +205,7 @@ module tt_um_aiju_8080 (
 		endcase
 	end
 
-	reg [4:0] decode_goto;
+	reg [5:0] decode_goto;
 	always @(*) begin
 		decode_goto = CPU_FETCH;
 		case(1'b1)
@@ -208,6 +223,9 @@ module tt_um_aiju_8080 (
 		iRET: decode_goto = CPU_RET0;
 		iRETcc: decode_goto = condition ? CPU_RET0 : CPU_FETCH;
 		iPCHL: decode_goto = CPU_PCHL0;
+		iSPHL: decode_goto = CPU_SPHL0;
+		iINR, iDCR: decode_goto = CPU_INRDCR0;
+		iINX, iDCX: decode_goto = CPU_INXDCX0;
 		endcase
 	end
 
@@ -232,6 +250,8 @@ module tt_um_aiju_8080 (
 	localparam ALU_CMA = 13;
 	localparam ALU_STC = 14;
 	localparam ALU_CMC = 15;
+	localparam ALU_INC = 16;
+	localparam ALU_DEC = 17;
 	localparam ALU_NOP = 31;
 
 	always @(*) begin
@@ -296,6 +316,14 @@ module tt_um_aiju_8080 (
 				alu_carry_out = 1'b0;
 			end
 		end
+		ALU_INC: begin
+			{alu_carry_out, aluOut} = aluIn + 1;
+			alu_aux_carry_out = (aluIn & 15) == 15;
+		end
+		ALU_DEC: begin
+			{alu_carry_out, aluOut} = aluIn - 1;
+			alu_aux_carry_out = (aluIn & 15) == 0;
+		end
 		endcase
 	end
 	wire alu_zero = aluOut == 0;
@@ -314,10 +342,12 @@ module tt_um_aiju_8080 (
 	wire sp_decrement =
 		state == CPU_PUSH0 || state == CPU_PUSH1
 		|| state == CPU_CALL1 && (!iCALLcc || condition)
-		|| state == CPU_CALL2;
+		|| state == CPU_CALL2
+		|| state == CPU_INXDCX0 && iDCX_SP;
 	wire sp_increment =
 		state == CPU_POP0 || state == CPU_POP1
-		|| state == CPU_RET0 || state == CPU_RET1;
+		|| state == CPU_RET0 || state == CPU_RET1
+		|| state == CPU_INXDCX0 && iINX_SP;
 	wire pc_jmp =
 		state == CPU_JMP1 && (!iJMPcc || condition)
 		|| state == CPU_RET1;
@@ -505,6 +535,22 @@ module tt_um_aiju_8080 (
 					state <= CPU_PCHL2;
 				CPU_PCHL2:
 					state <= CPU_FETCH;
+				CPU_SPHL0:
+					state <= CPU_SPHL1;
+				CPU_SPHL1:
+					state <= CPU_FETCH;
+				CPU_INRDCR0:
+					state <= CPU_INRDCR1;
+				CPU_INRDCR1:
+					state <= CPU_FETCH;
+				CPU_INXDCX0:
+					state <= iINX_SP || iDCX_SP ? CPU_FETCH : CPU_INXDCX1;
+				CPU_INXDCX1:
+					state <= alu_carry_out ? CPU_INXDCX2 : CPU_FETCH;
+				CPU_INXDCX2:
+					state <= CPU_INXDCX3;
+				CPU_INXDCX3:
+					state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -565,6 +611,14 @@ module tt_um_aiju_8080 (
 			memory_addr = rSP;
 			memory_wdata = DB;
 			memory_write = 1'b1;
+		end
+		CPU_INRDCR0, CPU_INRDCR1: begin
+			if(memory_operand) begin
+				memory_addr = {rH, rL};
+				memory_wdata = DB;
+				memory_read = state == CPU_INRDCR0;
+				memory_write = state == CPU_INRDCR1;
+			end
 		end
 		endcase
 	end
@@ -678,6 +732,33 @@ module tt_um_aiju_8080 (
 		CPU_PCHL1: begin
 			db_src = DB_H;
 			db_dst = DB_ALH;
+		end
+		CPU_SPHL0: begin
+			db_src = DB_L;
+			db_dst = DB_SPL;
+		end
+		CPU_SPHL1: begin
+			db_src = DB_H;
+			db_dst = DB_SPH;
+		end
+		CPU_INRDCR0: begin
+			db_src = {1'b1, rIR[5:3]};
+			db_dst = DB_ALU;
+		end
+		CPU_INRDCR1: begin
+			db_src = DB_ALU;
+			db_dst = {1'b1, rIR[5:3]};
+			alu_op = iDCR ? ALU_DEC : ALU_INC;
+			set_flags = 8'hfe;
+		end
+		CPU_INXDCX0, CPU_INXDCX2: begin
+			db_src = {1'b1, rIR[5:4], state == CPU_INXDCX0};
+			db_dst = DB_ALU;
+		end
+		CPU_INXDCX1, CPU_INXDCX3: begin
+			db_src = DB_ALU;
+			db_dst = {1'b1, rIR[5:4], state == CPU_INXDCX1};
+			alu_op = iDCX ? ALU_DEC : ALU_INC;
 		end
 		endcase
 	end
