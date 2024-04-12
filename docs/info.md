@@ -9,12 +9,12 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-It's a counter.
+It's a 8080-compatible CPU. It needs the RP2040 to simulate RAM and I/O.
 
 ## How to test
 
-Watch it go!
+TBD
 
 ## External hardware
 
-LEDs for flashiness.
+RP2040.
