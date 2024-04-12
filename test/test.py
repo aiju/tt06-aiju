@@ -124,6 +124,22 @@ def subtraction(a, b, borrow):
   result = (a - b - int(borrow)) & 255
   return (result, carry_out, half_carry_out)
 
+def alu_op(op, a, b, carry):
+  if op == 0:
+    return addition(a, b, False)
+  elif op == 1:
+    return addition(a, b, carry)
+  elif op == 2 or op == 7:
+    return subtraction(a, b, False)
+  elif op == 3:
+    return subtraction(a, b, carry)
+  elif op == 4:
+    return (a & b, False, ((a | b) & 8) != 0)
+  elif op == 5:
+    return (a ^ b, False, False)
+  elif op == 6:
+    return (a | b, False, False)
+
 class CPU:
   def __init__(self, bus_model):
     self.rA = 0
@@ -231,50 +247,19 @@ class CPU:
   async def iMOV(self, dst, src):
     data = await self.getRegM(src)
     await self.setRegM(dst, data)
-  @instruction(0x80, {'src':(2,0)})
-  async def iADD(self, src):
+  @instruction(0x80, {'op':(5,3), 'src':(2,0)})
+  async def iALU(self, op, src):
     data = await self.getRegM(src)
-    (result, carry, half_carry) = addition(self.rA, data, False)
-    self.rA = result
+    (result, carry, half_carry) = alu_op(op, self.rA, data, (self.rPSR & FLAGC) != 0)
+    if op != 7:
+      self.rA = result
     self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
-  @instruction(0x88, {'src':(2,0)})
-  async def iADC(self, src):
-    data = await self.getRegM(src)
-    (result, carry, half_carry) = addition(self.rA, data, (self.rPSR & FLAGC) != 0)
-    self.rA = result
-    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
-  @instruction(0x90, {'src':(2,0)})
-  async def iSUB(self, src):
-    data = await self.getRegM(src)
-    (result, carry, half_carry) = subtraction(self.rA, data, False)
-    self.rA = result
-    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
-  @instruction(0x98, {'src':(2,0)})
-  async def iSBB(self, src):
-    data = await self.getRegM(src)
-    (result, carry, half_carry) = subtraction(self.rA, data, (self.rPSR & FLAGC) != 0)
-    self.rA = result
-    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
-  @instruction(0xa0, {'src':(2,0)})
-  async def iANA(self, src):
-    data = await self.getRegM(src)
-    half_carry = ((self.rA | data) & 8) != 0
-    self.rA &= data
-    self.flags(self.rA, S='S', Z='Z', P='P', C=False, H=half_carry)
-  @instruction(0xb0, {'src':(2,0)})
-  async def iORA(self, src):
-    data = await self.getRegM(src)
-    self.rA |= data
-    self.flags(self.rA, S='S', Z='Z', P='P', C=False, H=False)
-  @instruction(0xa8, {'src':(2,0)})
-  async def iXRA(self, src):
-    data = await self.getRegM(src)
-    self.rA ^= data
-    self.flags(self.rA, S='S', Z='Z', P='P', C=False, H=False)
-  @instruction(0xb8, {'src':(2,0)})
-  async def iCMP(self, src):
-    data = await self.getRegM(src)
-    (result, carry, half_carry) = subtraction(self.rA, data, False)
+  @instruction(0xc6, {'op':(5,3)})
+  async def iALU_d8(self, op):
+    data = await self.fetch()
+    (result, carry, half_carry) = alu_op(op, self.rA, data, (self.rPSR & FLAGC) != 0)
+    if op != 7:
+      self.rA = result
     self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
   @instruction(0xc3)
   async def iJMP(self):
@@ -398,3 +383,9 @@ async def test_ALU(dut, codegen):
       codegen.test_code([0x80 | op << 3 | r])
     for r in range(20):
       codegen.test_code([0x80 | op << 3])
+
+@test()
+async def test_ALU_imm(dut, codegen):
+  for op in range(8):
+    for r in range(20):
+      codegen.test_code([0xc6 | op << 3])

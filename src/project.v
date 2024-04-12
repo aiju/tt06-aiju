@@ -135,6 +135,7 @@ module tt_um_aiju (
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
+	wire iALUI = (rIR & ~8'h38) == 8'b1100_0110;
 	wire iMVI = rIR[7:6] == 0 && rIR[2:0] == 3'b110;
 	wire iJMP = rIR == 8'b1100_0011;
 	wire iPUSH = (rIR & ~8'h30) == 8'b1100_0101;
@@ -150,7 +151,7 @@ module tt_um_aiju (
 		decode_goto = CPU_FETCH;
 		case(1'b1)
 		iMOV: decode_goto = CPU_MOV;
-		iALU: decode_goto = CPU_ALU0;
+		iALU, iALUI: decode_goto = CPU_ALU0;
 		iMVI: decode_goto = CPU_MVI0;
 		iJMP: decode_goto = CPU_JMP0;
 		iPUSH: decode_goto = CPU_PUSH0;
@@ -203,7 +204,9 @@ module tt_um_aiju (
 	wire [7:0] alu_flags = {alu_sign, alu_zero, 1'b0, alu_aux_carry_out, 1'b0, alu_parity, 1'b1, alu_carry_out};
 
 	wire cycle_done = !memory_read && !memory_write || memory_done;
-	wire pc_increment = state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0;
+	wire pc_increment =
+		state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0
+		|| state == CPU_ALU0 && iALUI;
 	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1;
 	wire sp_increment = state == CPU_POP0 || state == CPU_POP1;
 	wire pc_jmp = state == CPU_JMP1;
@@ -346,7 +349,10 @@ module tt_um_aiju (
 				memory_read = 1'b1;
 		end
 		CPU_ALU0: begin
-			if(memory_operand) begin
+			if(iALUI) begin
+				memory_addr = rPC;
+				memory_read = 1'b1;
+			end else if(memory_operand) begin
 				memory_addr = {rH, rL};
 				memory_read = 1'b1;
 			end
@@ -381,7 +387,7 @@ module tt_um_aiju (
 			db_src = 4'b0111;
 		end
 		CPU_ALU0: begin
-			db_src = {1'b1, rIR[2:0]};
+			db_src = iALUI ? 4'b1110 : {1'b1, rIR[2:0]};
 			db_dst = 4'b0111;
 		end
 		CPU_ALU1: begin
