@@ -165,6 +165,9 @@ module tt_um_aiju (
 	reg [3:0] alu_op;
 	reg [7:0] set_flags;
 	localparam ALU_ADD = 0;
+	localparam ALU_ADC = 1;
+	localparam ALU_SUB = 2;
+	localparam ALU_SBB = 3;
 	localparam ALU_NOP = 15;
 
 	always @(*) begin
@@ -172,9 +175,13 @@ module tt_um_aiju (
 		alu_aux_carry_out = 1'b0;
 		aluOut = aluIn;
 		case(alu_op)
-		ALU_ADD: begin
-			{alu_carry_out, aluOut} = rA + aluIn;
-			alu_aux_carry_out = (rA[3:0] + aluIn[3:0]) >> 4;
+		ALU_ADD, ALU_ADC: begin
+			{alu_carry_out, aluOut} = rA + aluIn + (rPSR[0] & (alu_op == ALU_ADC));
+			alu_aux_carry_out = (((rA & 15) + (aluIn & 15) + (rPSR[0] & (alu_op == ALU_ADC))) & 16) != 0;
+		end
+		ALU_SUB, ALU_SBB: begin
+			{alu_carry_out, aluOut} = rA - aluIn - (rPSR[0] & (alu_op == ALU_SBB));
+			alu_aux_carry_out = (((rA & 15) - (aluIn & 15) - (rPSR[0] & (alu_op == ALU_SBB))) & 16) != 0;
 		end
 		endcase
 	end
@@ -183,11 +190,12 @@ module tt_um_aiju (
 	wire alu_sign = aluOut[7];
 	wire [7:0] alu_flags = {alu_sign, alu_zero, 1'b0, alu_aux_carry_out, 1'b0, alu_parity, 1'b1, alu_carry_out};
 
-	wire pc_increment = (state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0) && memory_done;
-	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1 && memory_done;
-	wire sp_increment = (state == CPU_POP0 || state == CPU_POP1) && memory_done;
-	wire pc_jmp = state == CPU_JMP1 && memory_done;
-	wire ir_load = state == CPU_FETCH && memory_done;
+	wire cycle_done = !memory_read && !memory_write || memory_done;
+	wire pc_increment = state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0;
+	wire sp_decrement = state == CPU_PUSH0 || state == CPU_PUSH1;
+	wire sp_increment = state == CPU_POP0 || state == CPU_POP1;
+	wire pc_jmp = state == CPU_JMP1;
+	wire ir_load = state == CPU_FETCH;
 	assign halted = state == CPU_HALT;
 	reg [3:0] db_dst;
 	reg [3:0] db_src;
@@ -215,16 +223,18 @@ module tt_um_aiju (
 			rIR <= 0;
 			rSP <= 0;
 		end else begin
-			if(pc_increment)
-				rPC <= rPC + 1;
-			if(pc_jmp)
-				rPC <= {memory_rdata, aluIn};
-			if(ir_load)
-				rIR <= memory_rdata;
-			if(sp_increment)
-				rSP <= rSP + 1;
-			if(sp_decrement)
-				rSP <= rSP - 1;
+			if(cycle_done) begin
+				if(pc_increment)
+					rPC <= rPC + 1;
+				if(pc_jmp)
+					rPC <= {memory_rdata, aluIn};
+				if(ir_load)
+					rIR <= memory_rdata;
+				if(sp_increment)
+					rSP <= rSP + 1;
+				if(sp_decrement)
+					rSP <= rSP - 1;
+			end
 		end
 	end
 
@@ -232,7 +242,12 @@ module tt_um_aiju (
 		if(!rst_n) begin
 			rPSR <= 2;
 		end else begin
-			rPSR <= (rPSR & ~set_flags | alu_flags & set_flags) & ~8'h28 | 2;
+			if(cycle_done) begin
+				if(db_dst == 4'b0110)
+					rPSR <= DB & ~8'h28 | 2;
+				else
+					rPSR <= (rPSR & ~set_flags | alu_flags & set_flags) & ~8'h28 | 2;
+			end
 		end
 	end
 
@@ -241,16 +256,18 @@ module tt_um_aiju (
 			{rA, rB, rC, rD, rE, rH, rL} <= 0;
 			aluIn <= 0;
 		end else begin
-			case(db_dst)
-			4'b0111: aluIn <= DB;
-			4'b1000: rB <= DB;
-			4'b1001: rC <= DB;
-			4'b1010: rD <= DB;
-			4'b1011: rE <= DB;
-			4'b1100: rH <= DB;
-			4'b1101: rL <= DB;
-			4'b1111: rA <= DB;
-			endcase
+			if(cycle_done) begin
+				case(db_dst)
+				4'b0111: aluIn <= DB;
+				4'b1000: rB <= DB;
+				4'b1001: rC <= DB;
+				4'b1010: rD <= DB;
+				4'b1011: rE <= DB;
+				4'b1100: rH <= DB;
+				4'b1101: rL <= DB;
+				4'b1111: rA <= DB;
+				endcase
+			end
 		end
 	end
 
@@ -258,47 +275,38 @@ module tt_um_aiju (
 		if(!rst_n) begin
 			state <= CPU_FETCH;
 		end else begin
-			case(state)
-			CPU_FETCH:
-				if(memory_done)
+			if(cycle_done) begin
+				case(state)
+				CPU_FETCH:
 					state <= CPU_DECODE;
-			CPU_DECODE:
-				state <= decode_goto;
-			CPU_MVI0:
-				if(memory_done)
+				CPU_DECODE:
+					state <= decode_goto;
+				CPU_MVI0:
 					state <= memory_operand ? CPU_MVI1 : CPU_FETCH;
-			CPU_MVI1:
-				if(memory_done)
+				CPU_MVI1:
 					state <= CPU_FETCH;
-			CPU_MOV:
-				if(!memory_operand || memory_done)
+				CPU_MOV:
 					state <= CPU_FETCH;
-			CPU_ALU0:
-				if(!memory_operand || memory_done)
+				CPU_ALU0:
 					state <= CPU_ALU1;
-			CPU_ALU1:
-				state <= CPU_FETCH;
-			CPU_JMP0:
-				if(memory_done)
+				CPU_ALU1:
+					state <= CPU_FETCH;
+				CPU_JMP0:
 					state <= CPU_JMP1;
-			CPU_JMP1:
-				if(memory_done)
+				CPU_JMP1:
 					state <= CPU_FETCH;
-			CPU_PUSH0:
-				state <= CPU_PUSH1;
-			CPU_PUSH1:
-				if(memory_done)
+				CPU_PUSH0:
+					state <= CPU_PUSH1;
+				CPU_PUSH1:
 					state <= CPU_PUSH2;
-			CPU_PUSH2:
-				if(memory_done)
+				CPU_PUSH2:
 					state <= CPU_FETCH;
-			CPU_POP0:
-				if(memory_done)
+				CPU_POP0:
 					state <= CPU_POP1;
-			CPU_POP1:
-				if(memory_done)
+				CPU_POP1:
 					state <= CPU_FETCH;
-			endcase
+				endcase
+			end
 		end
 	end
 
@@ -367,7 +375,7 @@ module tt_um_aiju (
 		CPU_ALU1: begin
 			db_src = 4'b0111;
 			db_dst = 4'b1111;
-			alu_op = ALU_ADD;
+			alu_op = rIR[5:3];
 			set_flags = 8'hff;
 		end
 		CPU_JMP0: begin

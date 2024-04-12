@@ -10,7 +10,7 @@ import operator
 
 class Memory:
   def __init__(self):
-    self.contents = [0] * 65536
+    self.contents = list(random.randbytes(65536))
     self.ptr = 0
   def read(self, addr):
     return self.contents[addr]
@@ -95,6 +95,35 @@ def instruction(opcode, fields={}, exclude=[]):
         cpu_opcodes[op] = (lambda values: lambda self: func(self, **values))(field_values)
   return decorator
 
+FLAGC = 0x01
+FLAGP = 0x04
+FLAGH = 0x10
+FLAGZ = 0x40
+FLAGS = 0x80
+
+def parity(data):
+  while data > 1:
+    data = data >> 1 ^ (data & 1)
+  return data
+
+def addition(a, b, carry):
+  assert 0 <= a <= 255
+  assert 0 <= b <= 255
+  assert carry is True or carry is False
+  carry_out = (a + b + int(carry)) > 255
+  half_carry_out = ((a & 15) + (b & 15) + int(carry)) > 15
+  result = (a + b + int(carry)) & 255
+  return (result, carry_out, half_carry_out)
+
+def subtraction(a, b, borrow):
+  assert 0 <= a <= 255
+  assert 0 <= b <= 255
+  assert borrow is True or borrow is False
+  carry_out = (a - b - int(borrow)) < 0
+  half_carry_out = ((a & 15) - (b & 15) - int(borrow)) < 0
+  result = (a - b - int(borrow)) & 255
+  return (result, carry_out, half_carry_out)
+
 class CPU:
   def __init__(self, bus_model):
     self.rA = 0
@@ -164,6 +193,29 @@ class CPU:
       raise Exception("undefined opcode %.2x" % ir)
     await cpu_opcodes[ir](self)
     return True
+  def flags(self, data, S=None, Z=None, P=None, C=None, H=None):
+    assert 0 <= data <= 255
+    data_flags = {
+      'Z': data == 0,
+      'S': (data & 0x80) != 0,
+      'P': parity(data)
+    }
+    def do_flag(c, v):
+      if v == True:
+        self.rPSR |= c
+      elif v == False:
+        self.rPSR &= ~c
+      elif v in data_flags:
+        do_flag(c, data_flags[v])
+      elif v == None:
+        pass
+      else:
+        assert False
+    do_flag(FLAGS, S)
+    do_flag(FLAGZ, Z)
+    do_flag(FLAGP, P)
+    do_flag(FLAGC, C)
+    do_flag(FLAGH, H)
   @instruction(0x00)
   async def iNOP(self):
     pass
@@ -182,7 +234,27 @@ class CPU:
   @instruction(0x80, {'src':(2,0)})
   async def iADD(self, src):
     data = await self.getRegM(src)
-    self.rA = (self.rA + data) & 255
+    (result, carry, half_carry) = addition(self.rA, data, False)
+    self.rA = result
+    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
+  @instruction(0x88, {'src':(2,0)})
+  async def iADC(self, src):
+    data = await self.getRegM(src)
+    (result, carry, half_carry) = addition(self.rA, data, (self.rPSR & FLAGC) != 0)
+    self.rA = result
+    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
+  @instruction(0x90, {'src':(2,0)})
+  async def iSUB(self, src):
+    data = await self.getRegM(src)
+    (result, carry, half_carry) = subtraction(self.rA, data, False)
+    self.rA = result
+    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
+  @instruction(0x98, {'src':(2,0)})
+  async def iSBB(self, src):
+    data = await self.getRegM(src)
+    (result, carry, half_carry) = subtraction(self.rA, data, (self.rPSR & FLAGC) != 0)
+    self.rA = result
+    self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
   @instruction(0xc3)
   async def iJMP(self):
     pcL = await self.read(self.rPC)
@@ -219,7 +291,7 @@ class CPU:
     self.rH = await self.pop()
   @instruction(0xf1)
   async def iPOP_AF(self):
-    self.rPSR = await self.pop()
+    self.rPSR = (await self.pop()) & ~0x28 | 2
     self.rA = await self.pop()
 
 class TestCodeGenerator:
@@ -233,9 +305,7 @@ class TestCodeGenerator:
       if i != 6:
         self.set_reg(i, random.randint(0, 255))
   def check_regs(self):
-    for i in range(8):
-      if i != 6:
-        self.memory.append([0x70 | i])
+    self.memory.append([0xc5, 0xd5, 0xe5, 0xf5])
   def test_code(self, code, **kwargs):
     self.random_regs()
     self.memory.append(code)
@@ -245,7 +315,7 @@ class TestCodeGenerator:
 
 
 async def timeout(dut):
-  await Timer(10000, units='us')
+  await Timer(1000, units='ms')
   assert False and "TIMED OUT"
 
 async def setup_dut(dut):
@@ -268,11 +338,10 @@ def test():
       await test_fn(dut, codegen)
       memory.append([0x76])
       cpu = CPU(BusModel(memory, dut))
-      for i in range(200):
-        await cpu.step()
+      while await cpu.step():
+        pass
     coco_test.__name__ = test_fn.__name__
     coco_test.__qualname__ = test_fn.__name__
-    print(test_fn.__name__)
     return cocotb.test()(coco_test)
   return test_decorator
 
@@ -300,3 +369,11 @@ async def test_PUSH_POP(dut, codegen):
 @test()
 async def test_JUMP(dut, codegen):
   codegen.test_code([0xc3, 0xbe, 0xba], jump=0xbabe)
+
+@test()
+async def test_ALU(dut, codegen):
+  for op in range(4):
+    for r in range(8):
+      codegen.test_code([0x80 | op << 3 | r])
+    for r in range(20):
+      codegen.test_code([0x80 | op << 3])
