@@ -1,115 +1,17 @@
-/*
- * Copyright (c) 2024 Your Name
- * SPDX-License-Identifier: Apache-2.0
- */
+`default_nettype none
+module cpu(
+    input wire clk,
+    input wire rst_n,
 
-`define default_netname none
+    output reg memory_read,
+    output reg memory_write,
+    output reg [15:0] memory_addr,
+    output reg [7:0] memory_wdata,
+    input wire [7:0] memory_rdata,
+    input wire memory_done,
 
-module tt_um_aiju_8080 (
-    input  wire [7:0] ui_in,    // Dedicated inputs
-    output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs: Input path
-    output reg [7:0] uio_out,  // IOs: Output path
-    output reg [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-    input  wire       ena,      // will go high when the design is enabled
-    input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - low to reset
+    output wire cpu_halted
 );
-
-	reg memory_read, memory_write;
-	reg memory_done;
-	reg [15:0] memory_addr;
-	wire [7:0] memory_rdata;
-	reg [7:0] memory_wdata;
-	wire halted;
-
-	// TODO: synchroniser
-	wire handshake_in;
-	reg handshake_out;
-	assign handshake_in = ui_in[0];
-	assign uo_out = {halted, memory_read, memory_write, handshake_out};
-	reg handshake_valid, handshake_ready;
-	reg handshake_state;
-	always @(posedge clk or negedge rst_n) begin
-		if(!rst_n) begin
-			handshake_ready <= 1'b0;
-			handshake_state <= 1'b0;
-			handshake_out <= 1'b0;
-		end else begin
-			handshake_ready <= 1'b0;
-			if(!handshake_state) begin
-				if(!handshake_in) begin
-					handshake_state <= 1'b1;
-				end
-			end else begin
-				if(handshake_valid) begin
-					handshake_out <= 1'b1;
-				end
-				if(handshake_in && handshake_out) begin
-					handshake_ready <= 1'b1;
-					handshake_out <= 1'b0;
-					handshake_state <= 1'b0;
-				end
-			end
-		end
-	end
-
-	reg [3:0] memory_state, memory_state_nxt;
-	assign memory_rdata = uio_in;
-	localparam MEMORY_IDLE = 0;
-	localparam MEMORY_ADDR_LOW = 1;
-	localparam MEMORY_ADDR_HIGH = 2;
-	localparam MEMORY_DATA = 3;
-
-	always @(posedge clk or negedge rst_n) begin
-		if(!rst_n) begin
-			memory_state <= MEMORY_IDLE;
-		end else begin
-			memory_state <= memory_state_nxt;
-		end
-	end
-
-	always @(*) begin
-		memory_state_nxt = memory_state;
-		uio_oe = 8'b0;
-		uio_out = 8'bx;
-		handshake_valid = 1'b0;
-		memory_done = 1'b0;
-		case(memory_state)
-		MEMORY_IDLE: begin
-			if(memory_read || memory_write) begin
-				memory_state_nxt = MEMORY_ADDR_LOW;
-			end
-		end
-		MEMORY_ADDR_LOW: begin
-			handshake_valid = 1'b1;
-			uio_oe = 8'hff;
-			uio_out = memory_addr[7:0];
-			if(handshake_ready) begin
-				memory_state_nxt = MEMORY_ADDR_HIGH;
-			end
-		end
-		MEMORY_ADDR_HIGH: begin
-			handshake_valid = 1'b1;
-			uio_oe = 8'hff;
-			uio_out = memory_addr[15:8];
-			if(handshake_ready) begin
-				memory_state_nxt = MEMORY_DATA;
-			end
-		end
-		MEMORY_DATA: begin
-			handshake_valid = 1'b1;
-			if(memory_write) begin
-				uio_oe = 8'hff;
-				uio_out = memory_wdata;
-			end
-			if(handshake_ready) begin
-				memory_done = 1'b1;
-				memory_state_nxt = MEMORY_IDLE;
-			end
-		end
-		endcase
-	end
 
 	reg [15:0] AL;
 	reg [15:0] rPC;
@@ -360,7 +262,7 @@ module tt_um_aiju_8080 (
 	wire pc_jmp_al = state == CPU_CALL3 && !iRST || state == CPU_PCHL2;
 	wire pc_rst_jmp = state == CPU_CALL3 && iRST;
 	wire ir_load = state == CPU_FETCH;
-	assign halted = state == CPU_HALT;
+	assign cpu_halted = state == CPU_HALT;
 	reg [4:0] db_dst;
 	reg [4:0] db_src;
 
@@ -791,5 +693,4 @@ module tt_um_aiju_8080 (
 		end
 		endcase
 	end
-
 endmodule

@@ -34,39 +34,47 @@ class BusModel:
     while (self.dut.uo_out.value & 1) != 0:
       await ClockCycles(self.dut.clk, 1)
     self.dut.ui_in.value = 0
+  def read_bus(self):
+    assert self.dut.uio_oe.value == 0xff
+    return int(self.dut.uio_out)
+  def write_bus(self, value):
+    assert self.dut.uio_oe.value == 0x00
+    self.dut.uio_in.value = value
+  def clear_bus(self):
+    self.dut.uio_in.value = cocotb.binary.BinaryValue('xxxxxxxx')
+  def assert_state(self, state):
+    assert (self.dut.uo_out.value >> 1 & 3) == state
+
   async def read(self, addr):
     value = self.memory.read(addr)
     await self.handshake_begin()
-    assert self.dut.uio_out.value == (addr & 0xff)
-    assert self.dut.uio_oe.value == 0xff
-    assert (self.dut.uo_out.value & 2) == 0
+    self.assert_state(0)
+    assert self.read_bus() == (addr & 0xff)
     await self.handshake_end()
     await self.handshake_begin()
-    assert self.dut.uio_out.value == (addr >> 8)
-    assert self.dut.uio_oe.value == 0xff
-    assert (self.dut.uo_out.value & 2) == 0
+    self.assert_state(1)
+    assert self.read_bus() == (addr >> 8)
     await self.handshake_end()
     await self.handshake_begin()
-    assert self.dut.uio_oe.value == 0x00
-    self.dut.uio_in.value = value
+    self.assert_state(2)
+    self.write_bus(value)
     await ClockCycles(self.dut.clk, 1)
     await self.handshake_end()
+    self.clear_bus()
     return value
   async def write(self, addr, value):
     self.memory.write(addr, value)
     await self.handshake_begin()
-    assert self.dut.uio_out.value == (addr & 0xff)
-    assert self.dut.uio_oe.value == 0xff
-    assert (self.dut.uo_out.value & 2) == 2
+    self.assert_state(0)
+    assert self.read_bus() == (addr & 0xff)
     await self.handshake_end()
     await self.handshake_begin()
-    assert self.dut.uio_out.value == (addr >> 8)
-    assert self.dut.uio_oe.value == 0xff
-    assert (self.dut.uo_out.value & 2) == 2
+    self.assert_state(1)
+    assert self.read_bus() == (addr >> 8)
     await self.handshake_end()
     await self.handshake_begin()
-    assert self.dut.uio_oe.value == 0xff
-    assert self.dut.uio_out.value == value
+    self.assert_state(3)
+    assert self.read_bus() == value
     await self.handshake_end()
   async def halt(self):
     await ClockCycles(self.dut.clk, 20)
