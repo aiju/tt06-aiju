@@ -620,13 +620,17 @@ module cpu(
 			memory_wdata = DB;
 		end
         CPU_XCHG1, CPU_XCHG4: begin
-            memory_read = 1'b1;
-            memory_addr = rSP;
+            if(iXTHL) begin
+                memory_read = 1'b1;
+                memory_addr = rSP;
+            end
         end
         CPU_XCHG2, CPU_XCHG5: begin
-            memory_write = 1'b1;
-            memory_wdata = DB;
-            memory_addr = rSP;
+            if(iXTHL) begin
+                memory_write = 1'b1;
+                memory_wdata = DB;
+                memory_addr = rSP;
+            end
         end
         CPU_DEBUG0: begin
             memory_addr = 16'hCAFE;
