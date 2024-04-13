@@ -10,7 +10,11 @@ module cpu(
     input wire [7:0] memory_rdata,
     input wire memory_done,
 
-    output wire cpu_halted
+    input wire debug_req,
+
+    output wire cpu_fetch,
+    output wire cpu_halted,
+    output wire cpu_in_debug
 );
 
 	reg [15:0] AL;
@@ -262,7 +266,9 @@ module cpu(
 	wire pc_jmp_al = state == CPU_CALL3 && !iRST || state == CPU_PCHL2;
 	wire pc_rst_jmp = state == CPU_CALL3 && iRST;
 	wire ir_load = state == CPU_FETCH;
+    assign cpu_fetch = state == CPU_FETCH;
 	assign cpu_halted = state == CPU_HALT;
+    assign cpu_in_debug = 1'b0;
 	reg [4:0] db_dst;
 	reg [4:0] db_src;
 

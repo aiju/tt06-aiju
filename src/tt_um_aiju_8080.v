@@ -22,7 +22,9 @@ module tt_um_aiju_8080 (
 	wire		bus_handshake_req;	// From bus_if_i of bus_if.v
 	wire		bus_output_enable;	// From bus_if_i of bus_if.v
 	wire [1:0]	bus_state;		// From bus_if_i of bus_if.v
+	wire		cpu_fetch;		// From cpu_i of cpu.v
 	wire		cpu_halted;		// From cpu_i of cpu.v
+	wire		cpu_in_debug;		// From cpu_i of cpu.v
 	wire [15:0]	memory_addr;		// From cpu_i of cpu.v
 	wire		memory_done;		// From bus_if_i of bus_if.v
 	wire [7:0]	memory_rdata;		// From bus_if_i of bus_if.v
@@ -35,12 +37,28 @@ module tt_um_aiju_8080 (
 	assign uo_out[1] = bus_state[0];
 	assign uo_out[2] = bus_state[1];
 	assign uo_out[3] = cpu_halted;
-	assign uo_out[4] = 1'b0;
-	assign uo_out[5] = 1'b0;
+	assign uo_out[4] = cpu_fetch;
+	assign uo_out[5] = cpu_in_debug;
 	assign uo_out[6] = 1'b0;
 	assign uo_out[7] = 1'b0;
 
-	wire bus_handshake_ack = ui_in[0];
+	wire ext_bus_handshake_ack = ui_in[0];
+	wire ext_debug_req = ui_in[1];
+
+	wire bus_handshake_ack;
+	sync bus_handshake_ack_sync(
+		.clk(clk),
+		.rst_n(rst_n),
+		.in(ext_bus_handshake_ack),
+		.out(bus_handshake_ack)
+	);
+	wire debug_req;
+	sync debug_req_sync(
+		.clk(clk),
+		.rst_n(rst_n),
+		.in(ext_debug_req),
+		.out(debug_req)
+	);
 
 	wire [7:0] bus_data_in = uio_in;
 	assign uio_out = bus_data_out;
@@ -70,11 +88,36 @@ module tt_um_aiju_8080 (
 		  .memory_write		(memory_write),
 		  .memory_addr		(memory_addr[15:0]),
 		  .memory_wdata		(memory_wdata[7:0]),
+		  .cpu_fetch		(cpu_fetch),
 		  .cpu_halted		(cpu_halted),
+		  .cpu_in_debug		(cpu_in_debug),
 		  // Inputs
 		  .clk			(clk),
 		  .rst_n		(rst_n),
 		  .memory_rdata		(memory_rdata[7:0]),
-		  .memory_done		(memory_done));
+		  .memory_done		(memory_done),
+		  .debug_req		(debug_req));
+
+endmodule
+
+module sync(
+	input wire clk,
+	input wire rst_n,
+	input wire in,
+	output wire out
+);
+	(* keep *) reg a;
+	(* keep *) reg b;
+	assign out = b;
+
+	always @(posedge clk or negedge rst_n) begin
+		if(!rst_n) begin
+			a <= 1'b0;
+			b <= 1'b0;
+		end else begin
+			a <= in;
+			b <= a;
+		end
+	end
 
 endmodule
