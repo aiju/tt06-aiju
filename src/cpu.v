@@ -66,6 +66,20 @@ module cpu(
 	localparam CPU_LDAXSTAX0 = 39;
 	localparam CPU_LDAXSTAX1 = 40;
 	localparam CPU_LDAXSTAX2 = 41;
+    localparam CPU_XCHG0 = 42;
+    localparam CPU_XCHG1 = 43;
+    localparam CPU_XCHG2 = 44;
+    localparam CPU_XCHG3 = 45;
+    localparam CPU_XCHG4 = 46;
+    localparam CPU_XCHG5 = 47;
+    localparam CPU_DAD0 = 48;
+    localparam CPU_DAD1 = 49;
+    localparam CPU_DAD2 = 50;
+    localparam CPU_DAD3 = 51;
+    localparam CPU_DAD4 = 52;
+    localparam CPU_DAD5 = 53;
+    localparam CPU_DAD6 = 54;
+    localparam CPU_DAD7 = 55;
     localparam CPU_DEBUG0 = 62;
     localparam CPU_DEBUG1 = 63;
 
@@ -99,6 +113,9 @@ module cpu(
 	wire iDCX_SP = rIR == 8'b0011_1011;
 	wire iLDAX = (rIR & ~8'h10) == 8'b0000_1010;
 	wire iSTAX = (rIR & ~8'h10) == 8'b0000_0010;
+    wire iXCHG = rIR == 8'b1110_1011;
+    wire iXTHL = rIR == 8'b1110_0011;
+    wire iDAD = (rIR & ~8'h30) == 8'b0000_1001;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -144,6 +161,8 @@ module cpu(
 		iINR, iDCR: decode_goto = CPU_INRDCR0;
 		iINX, iDCX: decode_goto = CPU_INXDCX0;
 		iLDAX, iSTAX: decode_goto = CPU_LDAXSTAX0;
+        iXCHG, iXTHL: decode_goto = CPU_XCHG0;
+        iDAD: decode_goto = CPU_DAD0;
 		endcase
 	end
 
@@ -262,11 +281,13 @@ module cpu(
 		state == CPU_PUSH0 || state == CPU_PUSH1
 		|| state == CPU_CALL1 && (!iCALLcc || condition)
 		|| state == CPU_CALL2
-		|| state == CPU_INXDCX0 && iDCX_SP;
+		|| state == CPU_INXDCX0 && iDCX_SP
+        || state == CPU_XCHG5 && iXTHL;
 	wire sp_increment =
 		state == CPU_POP0 || state == CPU_POP1
 		|| state == CPU_RET0 || state == CPU_RET1
-		|| state == CPU_INXDCX0 && iINX_SP;
+		|| state == CPU_INXDCX0 && iINX_SP
+        || state == CPU_XCHG2 && iXTHL;
 	wire pc_jmp =
 		state == CPU_JMP1 && (!iJMPcc || condition)
 		|| state == CPU_RET1;
@@ -314,6 +335,8 @@ module cpu(
         DB_SPH: DB = rSP[15:8];
 		DB_PCL: DB = rPC[7:0];
 		DB_PCH: DB = rPC[15:8];
+        DB_ALL: DB = AL[7:0];
+        DB_ALH: DB = AL[15:8];
 		endcase
 	end
 
@@ -493,6 +516,34 @@ module cpu(
                         state <= CPU_FETCH;
                     else
                         state <= CPU_DEBUG0;
+                CPU_XCHG0:
+                    state <= CPU_XCHG1;
+                CPU_XCHG1:
+                    state <= CPU_XCHG2;
+                CPU_XCHG2:
+                    state <= CPU_XCHG3;
+                CPU_XCHG3:
+                    state <= CPU_XCHG4;
+                CPU_XCHG4:
+                    state <= CPU_XCHG5;
+                CPU_XCHG5:
+                    state <= CPU_FETCH;
+                CPU_DAD0:
+                    state <= CPU_DAD1;
+                CPU_DAD1:
+                    state <= CPU_DAD2;
+                CPU_DAD2:
+                    state <= CPU_DAD3;
+                CPU_DAD3:
+                    state <= CPU_DAD4;
+                CPU_DAD4:
+                    state <= CPU_DAD5;
+                CPU_DAD5:
+                    state <= CPU_DAD6;
+                CPU_DAD6:
+                    state <= CPU_DAD7;
+                CPU_DAD7:
+                    state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -568,6 +619,15 @@ module cpu(
 			memory_write = iSTAX;
 			memory_wdata = DB;
 		end
+        CPU_XCHG1, CPU_XCHG4: begin
+            memory_read = 1'b1;
+            memory_addr = rSP;
+        end
+        CPU_XCHG2, CPU_XCHG5: begin
+            memory_write = 1'b1;
+            memory_wdata = DB;
+            memory_addr = rSP;
+        end
         CPU_DEBUG0: begin
             memory_addr = 16'hCAFE;
             memory_read = 1'b1;
@@ -742,6 +802,68 @@ module cpu(
                 db_src = DB_MEM;
                 db_dst = rIR[4:0];
             end
+        end
+        CPU_XCHG0: begin
+            db_src = DB_L;
+            db_dst = DB_ALL;
+        end
+        CPU_XCHG1: begin
+            db_src = iXTHL ? DB_MEM : DB_E;
+            db_dst = DB_L;
+        end
+        CPU_XCHG2: begin
+            db_src = DB_ALL;
+            if(iXCHG)
+                db_dst = DB_E;
+        end
+        CPU_XCHG3: begin
+            db_src = DB_H;
+            db_dst = DB_ALL;
+        end
+        CPU_XCHG4: begin
+            db_src = iXTHL ? DB_MEM : DB_D;
+            db_dst = DB_H;
+        end
+        CPU_XCHG5: begin
+            db_src = DB_ALL;
+            if(iXCHG)
+                db_dst = DB_D;
+        end
+        CPU_DAD0: begin
+            db_src = DB_A;
+            db_dst = DB_ALL;
+        end
+        CPU_DAD1: begin
+            db_src = DB_L;
+            db_dst = DB_A;
+        end
+        CPU_DAD2: begin
+            db_src = rIR[5:4] == 3 ? DB_SPL : {1'b1, rIR[5:4], 1'b1};
+            db_dst = DB_ALU;
+        end
+        CPU_DAD3: begin
+            alu_op = ALU_ADD;
+            db_src = DB_ALU;
+            db_dst = DB_L;
+            set_flags = 8'h01;
+        end
+        CPU_DAD4: begin
+            db_src = DB_H;
+            db_dst = DB_A;
+        end
+        CPU_DAD5: begin
+            db_src = rIR[5:4] == 3 ? DB_SPH : {1'b1, rIR[5:4], 1'b0};
+            db_dst = DB_ALU;
+        end
+        CPU_DAD6: begin
+            alu_op = ALU_ADC;
+            db_src = DB_ALU;
+            db_dst = DB_H;
+            set_flags = 8'h01;
+        end
+        CPU_DAD7: begin
+            db_src = DB_ALL;
+            db_dst = DB_A;
         end
 		endcase
 	end

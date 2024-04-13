@@ -506,6 +506,26 @@ class CPU:
   @instruction(0x3B)
   async def iDCX_SP(self):
     self.rSP = (self.rSP - 1) & 0xffff
+  @instruction(0x09)
+  async def iDAD_BC(self):
+    (self.rL, carry, _) = addition(self.rL, self.rC, False)
+    (self.rH, carry, _) = addition(self.rH, self.rB, carry)
+    self.flags(0, C=carry)
+  @instruction(0x19)
+  async def iDAD_DE(self):
+    (self.rL, carry, _) = addition(self.rL, self.rE, False)
+    (self.rH, carry, _) = addition(self.rH, self.rD, carry)
+    self.flags(0, C=carry)
+  @instruction(0x29)
+  async def iDAD_HL(self):
+    (self.rL, carry, _) = addition(self.rL, self.rL, False)
+    (self.rH, carry, _) = addition(self.rH, self.rH, carry)
+    self.flags(0, C=carry)
+  @instruction(0x39)
+  async def iDAD_SP(self):
+    (self.rL, carry, _) = addition(self.rL, self.rSP & 0xff, False)
+    (self.rH, carry, _) = addition(self.rH, self.rSP >> 8, carry)
+    self.flags(0, C=carry)
   @instruction(0x0a)
   async def iLDAX_BC(self):
     self.rA = await self.read(self.rC | self.rB << 8)
@@ -518,6 +538,18 @@ class CPU:
   @instruction(0x12)
   async def iSTAX_DE(self):
     await self.write(self.rE | self.rD << 8, self.rA)
+  @instruction(0xEB)
+  async def iXCHG(self):
+    self.rH, self.rD = self.rD, self.rH
+    self.rL, self.rE = self.rE, self.rL
+  @instruction(0xE3)
+  async def iXTHL(self):
+    oldVal = self.rL
+    self.rL = await self.read(self.rSP)
+    await self.write(self.rSP, oldVal)
+    oldVal = self.rH
+    self.rH = await self.read(self.rSP + 1)
+    await self.write(self.rSP + 1, oldVal)
   async def debug(self):
     await self.bus_model.enter_debug()
     mapping = [
@@ -735,6 +767,20 @@ async def test_ALU_imm(dut, codegen):
 async def test_LXI(dut, codegen):
   for r in range(4):
       codegen.test_code([0x01 | r << 4, random.randint(0, 255), random.randint(0, 255)])
+
+@test()
+async def test_XCHG(dut, codegen):
+  codegen.test_code([0xEB])
+
+@test()
+async def test_XTHL(dut, codegen):
+  codegen.test_code([0xD5, 0xE3])
+
+@test()
+async def test_DAD(dut, codegen):
+  for r in range(4):
+    for n in range(8):
+      codegen.test_code([0x09 | r << 4])
 
 @cocotb.test()
 async def test_DEBUG(dut):
