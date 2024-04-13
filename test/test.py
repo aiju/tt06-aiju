@@ -30,13 +30,13 @@ class BusModel:
     while (self.dut.uo_out.value & 1) == 0:
       await ClockCycles(self.dut.clk, 1)
   async def handshake_end(self):
-    self.dut.ui_in.value = 1
+    self.dut.ui_in.value = self.dut.ui_in.value | 1
     while (self.dut.uo_out.value & 1) != 0:
       await ClockCycles(self.dut.clk, 1)
-    self.dut.ui_in.value = 0
+    self.dut.ui_in.value = self.dut.ui_in.value & ~1
   def read_bus(self):
     assert self.dut.uio_oe.value == 0xff
-    return int(self.dut.uio_out)
+    return self.dut.uio_out.value
   def write_bus(self, value):
     assert self.dut.uio_oe.value == 0x00
     self.dut.uio_in.value = value
@@ -44,9 +44,7 @@ class BusModel:
     self.dut.uio_in.value = cocotb.binary.BinaryValue('xxxxxxxx')
   def assert_state(self, state):
     assert (self.dut.uo_out.value >> 1 & 3) == state
-
-  async def read(self, addr):
-    value = self.memory.read(addr)
+  async def bus_read(self, addr, value):
     await self.handshake_begin()
     self.assert_state(0)
     assert self.read_bus() == (addr & 0xff)
@@ -61,9 +59,21 @@ class BusModel:
     await ClockCycles(self.dut.clk, 1)
     await self.handshake_end()
     self.clear_bus()
+  async def read(self, addr):
+    value = self.memory.read(addr)
+    await self.bus_read(addr, value)
     return value
-  async def write(self, addr, value):
-    self.memory.write(addr, value)
+  async def dummy_read(self):
+    await self.handshake_begin()
+    self.assert_state(0)
+    await self.handshake_end()
+    await self.handshake_begin()
+    self.assert_state(1)
+    await self.handshake_end()
+    await self.handshake_begin()
+    self.assert_state(2)
+    await self.handshake_end()
+  async def bus_write(self, addr):
     await self.handshake_begin()
     self.assert_state(0)
     assert self.read_bus() == (addr & 0xff)
@@ -74,11 +84,35 @@ class BusModel:
     await self.handshake_end()
     await self.handshake_begin()
     self.assert_state(3)
-    assert self.read_bus() == value
+    value = self.read_bus()
     await self.handshake_end()
+    return value
+  async def write(self, addr, value):
+    self.memory.write(addr, value)
+    assert (await self.bus_write(addr)) == value
   async def halt(self):
     await ClockCycles(self.dut.clk, 20)
     assert (self.dut.uo_out.value & 8) != 0
+  async def enter_debug(self):
+    print('enter debug')
+    self.dut.ui_in.value = self.dut.ui_in.value | 2
+    await ClockCycles(self.dut.clk, 1)
+    if (self.dut.uo_out.value & 8) == 0:
+      await self.dummy_read()
+    await ClockCycles(self.dut.clk, 20)
+    assert (self.dut.uo_out.value & 0x20) != 0
+    self.dut.ui_in.value = self.dut.ui_in.value & ~2
+    await ClockCycles(self.dut.clk, 1)
+  async def debug_read(self, addr):
+    await self.bus_read(0xcafe, addr)
+    return await self.bus_write(0xcaff)
+  async def debug_write(self, addr, value):
+    await self.bus_read(0xcafe, 0x80 | addr)
+    await self.bus_read(0xcaff, value)
+  async def leave_debug(self):
+    await self.bus_read(0xcafe, 0x40)
+    while (self.dut.uo_out.value & 0x20) != 0:
+      await ClockCycles(self.dut.clk, 1)
 
 cpu_opcodes = {}
 def instruction(opcode, fields={}, exclude=[]):
@@ -484,6 +518,24 @@ class CPU:
   @instruction(0x12)
   async def iSTAX_DE(self):
     await self.write(self.rE | self.rD << 8, self.rA)
+  async def debug(self):
+    await self.bus_model.enter_debug()
+    mapping = [
+      ('A', 15, self.rA), ('B', 8, self.rB), ('C', 9, self.rC), ('D', 10, self.rD),
+      ('E', 11, self.rE), ('H', 12, self.rH), ('L', 13, self.rL), ('PSR', 6, self.rPSR),
+      ('PC', (17, 16), self.rPC), ('SP', (5,4), self.rSP)
+    ]
+    for name, addr, expected in mapping:
+      if isinstance(addr, tuple):
+        (hi, lo) = addr
+        hi_value = await self.bus_model.debug_read(hi)
+        lo_value = await self.bus_model.debug_read(lo)
+        got = lo_value | hi_value << 8
+      else:
+        got = await self.bus_model.debug_read(addr)
+      if expected != got:
+        raise "mismatch for %s, expected 0x%x, got 0x%x" % (name, expected, got)
+    await self.bus_model.leave_debug()
 
 class TestCodeGenerator:
   def __init__(self, memory):
@@ -683,3 +735,15 @@ async def test_ALU_imm(dut, codegen):
 async def test_LXI(dut, codegen):
   for r in range(4):
       codegen.test_code([0x01 | r << 4, random.randint(0, 255), random.randint(0, 255)])
+
+@cocotb.test()
+async def test_DEBUG(dut):
+  await setup_dut(dut)
+  memory = Memory()
+  codegen = TestCodeGenerator(memory)
+  codegen.test_code([0x00])
+  memory.append([0x76])
+  cpu = CPU(BusModel(memory, dut))
+  while await cpu.step():
+    pass
+  await cpu.debug()

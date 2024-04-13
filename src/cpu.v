@@ -66,6 +66,8 @@ module cpu(
 	localparam CPU_LDAXSTAX0 = 39;
 	localparam CPU_LDAXSTAX1 = 40;
 	localparam CPU_LDAXSTAX2 = 41;
+    localparam CPU_DEBUG0 = 62;
+    localparam CPU_DEBUG1 = 63;
 
 	wire iMOV = rIR[7:6] == 1 && rIR != 8'b01110110;
 	wire iALU = rIR[7:6] == 2;
@@ -101,6 +103,10 @@ module cpu(
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
 		|| (iINR || iDCR || iMVI) && rIR[5:3] == 3'b110;
+
+    wire dbgEXIT = rIR[6];
+    wire dbgREAD = !rIR[7] && !dbgEXIT;
+    wire dbgWRITE = rIR[7];
 
 	reg condition;
 	always @(*) begin
@@ -245,7 +251,8 @@ module cpu(
 
 	wire cycle_done = !memory_read && !memory_write || memory_done;
 	wire pc_increment =
-		state == CPU_FETCH || state == CPU_MVI0 || state == CPU_JMP0
+		state == CPU_FETCH && !debug_req
+        || state == CPU_MVI0 || state == CPU_JMP0
 		|| state == CPU_ALU0 && iALUI
 		|| state == CPU_LXI0 || state == CPU_LXI1
 		|| state == CPU_DIRECT0 || state == CPU_DIRECT1
@@ -265,10 +272,10 @@ module cpu(
 		|| state == CPU_RET1;
 	wire pc_jmp_al = state == CPU_CALL3 && !iRST || state == CPU_PCHL2;
 	wire pc_rst_jmp = state == CPU_CALL3 && iRST;
-	wire ir_load = state == CPU_FETCH;
+	wire ir_load = state == CPU_FETCH || state == CPU_DEBUG0;
     assign cpu_fetch = state == CPU_FETCH;
 	assign cpu_halted = state == CPU_HALT;
-    assign cpu_in_debug = 1'b0;
+    assign cpu_in_debug = state == CPU_DEBUG0 || state == CPU_DEBUG1;
 	reg [4:0] db_dst;
 	reg [4:0] db_src;
 
@@ -303,6 +310,8 @@ module cpu(
 		DB_L: DB = rL;
 		DB_MEM: DB = memory_rdata;
 		DB_A: DB = rA;
+        DB_SPL: DB = rSP[7:0];
+        DB_SPH: DB = rSP[15:8];
 		DB_PCL: DB = rPC[7:0];
 		DB_PCH: DB = rPC[15:8];
 		endcase
@@ -384,9 +393,15 @@ module cpu(
 			if(cycle_done) begin
 				case(state)
 				CPU_FETCH:
-					state <= CPU_DECODE;
+                    if(debug_req)
+                        state <= CPU_DEBUG0;
+                    else
+					    state <= CPU_DECODE;
 				CPU_DECODE:
 					state <= decode_goto;
+                CPU_HALT:
+                    if(debug_req)
+                        state <= CPU_DEBUG0;
 				CPU_MVI0:
 					state <= memory_operand ? CPU_MVI1 : CPU_FETCH;
 				CPU_MVI1:
@@ -471,6 +486,13 @@ module cpu(
 					state <= CPU_LDAXSTAX2;
 				CPU_LDAXSTAX2:
 					state <= CPU_FETCH;
+                CPU_DEBUG0:
+                    state <= CPU_DEBUG1;
+                CPU_DEBUG1:
+                    if(dbgEXIT)
+                        state <= CPU_FETCH;
+                    else
+                        state <= CPU_DEBUG0;
 				endcase
 			end
 		end
@@ -546,6 +568,21 @@ module cpu(
 			memory_write = iSTAX;
 			memory_wdata = DB;
 		end
+        CPU_DEBUG0: begin
+            memory_addr = 16'hCAFE;
+            memory_read = 1'b1;
+        end
+        CPU_DEBUG1: begin
+            if(dbgREAD) begin
+                memory_addr = 16'hCAFF;
+                memory_write = 1'b1;
+                memory_wdata = DB;
+            end
+            if(dbgWRITE) begin
+                memory_addr = 16'hCAFF;
+                memory_read = 1'b1;
+            end
+        end
 		endcase
 	end
 
@@ -697,6 +734,15 @@ module cpu(
 			end else
 				db_src = DB_A;
 		end
+        CPU_DEBUG1: begin
+            if(dbgREAD) begin
+                db_src = rIR[4:0];
+            end
+            if(dbgWRITE) begin
+                db_src = DB_MEM;
+                db_dst = rIR[4:0];
+            end
+        end
 		endcase
 	end
 endmodule
