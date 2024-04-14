@@ -174,7 +174,7 @@ def subtraction(a, b, borrow):
   assert 0 <= b <= 255
   assert borrow is True or borrow is False
   carry_out = (a - b - int(borrow)) < 0
-  half_carry_out = ((a & 15) - (b & 15) - int(borrow)) < 0
+  half_carry_out = ((a & 15) - (b & 15) - int(borrow)) >= 0
   result = (a - b - int(borrow)) & 255
   return (result, carry_out, half_carry_out)
 
@@ -408,15 +408,14 @@ class CPU:
     self.rA = (self.rA >> 1 | c << 7) & 0xff
   @instruction(0x27)
   async def iDAA(self):
-    half_carry = False
-    carry = False
+    value = 0
     if (self.rA & 0x0f) > 9 or (self.rPSR & FLAGH) != 0:
-      half_carry = (self.rA & 0x0f) > 9
-      self.rA = (self.rA + 6) & 0xff
-    if (self.rA & 0xf0) > 0x90 or (self.rPSR & FLAGC) != 0:
-      carry = (self.rA & 0xf0) > 0x90
-      self.rA = (self.rA + 0x60) & 0xff
-    self.flags(self.rA, S='S', Z='Z', P='P', C=carry, H=half_carry)
+      value += 0x06
+    if self.rA >= 0x9a or (self.rPSR & FLAGC) != 0:
+      value += 0x60
+    old_carry = (self.rPSR & FLAGC) != 0
+    self.rA, carry, half_carry = addition(self.rA, value, False)
+    self.flags(self.rA, S='S', Z='Z', P='P', C=(old_carry or carry), H=half_carry)
   @instruction(0x2f)
   async def iCMA(self):
     self.rA ^= 0xff
@@ -809,6 +808,11 @@ async def test_DAD(dut, codegen):
       codegen.test_code([0x09 | r << 4])
 
 @test()
+async def test_DAA(dut, codegen):
+  for n in range(64):
+    codegen.test_code([0x27])
+
+@test()
 async def test_IO(dut, codegen):
   codegen.test_code([0xDB, random.randint(0, 255)])
   codegen.test_code([0xD3, random.randint(0, 255)])
@@ -825,7 +829,7 @@ async def test_DEBUG(dut):
     pass
   await cpu.debug()
 
-class BasicIOModel:
+class MSBasicIOModel:
   def __init__(self):
     self.input_buffer = " 20000\r\rY\r10 INPUT R\r20 PRINT 3.14159 * R * R\r30 END\rRUN\r 4\r"
   def io_in(self, port):
@@ -847,13 +851,70 @@ class BasicIOModel:
       print("write to unknown IO port %.2x data %.2x" % (port, data))
 
 @cocotb.test(skip=True)
-async def test_basic(dut):
+async def test_msbasic(dut):
   await setup_dut(dut)
   memory = Memory()
   with open('4kbas32.bin', 'rb') as file:
     basic = list(file.read())
   for i in range(len(basic)):
     memory.write(i, basic[i])
-  cpu = CPU(BusModel(memory, BasicIOModel(), dut))
+  cpu = CPU(BusModel(memory, MSBasicIOModel(), dut))
   while cpu.rPC != 0x1f8:
     await cpu.step()
+
+class DummyBusModel:
+  def __init__(self, memory, io_model):
+    self.memory = memory
+    self.io_model = io_model
+  async def read(self, addr, io=False):
+    if io:
+      return self.io_model.io_in(addr)
+    else:
+      return self.memory.read(addr)
+  async def write(self, addr, value, io=False):
+    if io:
+      return self.io_model.io_out(addr, value)
+    else:
+      return self.memory.write(addr, value)
+
+class CPMIOModel:
+  def io_in(self, port):
+    print("read from unknown IO port %.2x" % port)
+    return 0
+  def io_out(self, port, data):
+    if port == 0xcc:
+      cmd = self.cpu.rC
+      if cmd == 2:
+        print(chr(self.cpu.rE), end='', flush=True)
+      elif cmd == 9:
+        addr = self.cpu.rD << 8 | self.cpu.rE
+        while self.cpu.bus_model.memory.read(addr) != ord('$'):
+          print(chr(self.cpu.bus_model.memory.read(addr)), end='', flush=True)
+          addr += 1
+      else:
+        print("unknown cp/m call %.2x" % cmd)
+    else:
+      print("write to unknown IO port %.2x data %.2x" % (port, data))
+
+@cocotb.test(skip=True)
+async def test_exerciser(dut):
+  await setup_dut(dut)
+  memory = Memory()
+  with open('8080EX1.COM', 'rb') as file:
+    rom = list(file.read())
+  for i in range(len(rom)):
+    memory.write(0x100 + i, rom[i])
+  memory.write(0x120, memory.read(0x120) + 2)
+  memory.write(5, 0xd3)
+  memory.write(6, 0xcc)
+  memory.write(7, 0xc9)
+  io_model = CPMIOModel()
+  cpu = CPU(DummyBusModel(memory, io_model))
+  io_model.cpu = cpu
+  cpu.rPC = 0x100
+  n = 0
+  while cpu.rPC != 0x00:
+    await cpu.step()
+    n += 1
+    if (n % 1000000) == 0:
+      print(('%9d' % n) + '\b' * 9, end='', flush=True)

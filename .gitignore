@@ -2,6 +2,7 @@
 .idea
 .vscode
 *.vcd
+a.out
 runs
 tt_submission
 src/user_config.tcl

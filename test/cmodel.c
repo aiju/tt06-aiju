@@ -59,6 +59,39 @@ z80in(uint8_t addr)
 }
 
 static void
+outchar(char c)
+	{
+	extern uint64_t cyclecount;
+
+	if(c == '\r') return;
+	printf("%c", c);
+	if(c == '\n')
+		printf("%9d  ", (int)(cyclecount / 1000000));
+	fflush(stdout);
+}
+
+static void
+cpmcall(void)
+{
+	switch(s[rC]){
+	case 0:
+		exit(0);
+	case 2:
+		outchar(s[rE]);
+		break;
+	case 9: {
+		uint16_t ptr = DE();
+
+		while(memory[ptr] != '$')
+			outchar(memory[ptr++]);
+		break;
+	}
+	default:
+		printf("unknown cp/m call %.2x\n", s[rC]);
+	}
+}
+
+static void
 z80out(uint8_t addr, uint8_t data)
 {
 	switch(addr){
@@ -66,6 +99,7 @@ z80out(uint8_t addr, uint8_t data)
 		printf("%c", data & 0x7f);
 		fflush(stdout);
 		break;
+	case 0xcc: cpmcall(); break;
 	default:
 		printf("write to unknown I/O port %.2x, data %.2x\n", addr, data);
 	}
@@ -213,7 +247,7 @@ alu(u8int op, u8int n)
 		s[rF] |= FLAGN;
 		if((v & 0x100) == 0)
 			s[rF] |= FLAGC;
-		if((v4 & 0x10) == 0)
+		if((v4 & 0x10) != 0)
 			s[rF] |= FLAGH;
 	}else{
 
@@ -266,7 +300,7 @@ dec(u8int v)
 		s[rF] |= FLAGS;
 	if(!parity(v))
 		s[rF] |= FLAGV;
-	if((v & 0xf) == 0xf)
+	if(!((v & 0xf) == 0xf))
 		s[rF] |= FLAGH;
 	return v;
 }
@@ -674,7 +708,7 @@ z80step(void)
 */
 	scurpc = spc;
 	op = fetch8();
-	fprintf(logfile, "PC %.4x IR %.2x AF %.2x%.2x BC %.2x%.2x DE %.2x%.2x HL %.2x%.2x SP %.4x\n", scurpc, op, s[rA], s[rF]&~0x28|2, s[rB], s[rC], s[rD], s[rE], s[rH], s[rL], sp);
+	//fprintf(stdout, "PC %.4x IR %.2x AF %.2x%.2x BC %.2x%.2x DE %.2x%.2x HL %.2x%.2x SP %.4x\n", scurpc, op, s[rA], s[rF]&~0x28|2, s[rB], s[rC], s[rD], s[rE], s[rH], s[rL], sp);
 	switch(op >> 6){
 	case 1: return move(op >> 3 & 7, op & 7);
 	case 2: return alu(op >> 3 & 7, op & 7);
@@ -717,24 +751,21 @@ z80step(void)
 		s[rF] = s[rF] & ~(FLAGC) | s[rA] >> 7;
 		s[rA] = s[rA] << 1 | v;
 		return 4;
-	case 0x27:
-		if(s[rA] > 0x99 || (s[rF] & FLAGC) != 0){
-			s[rF] |= FLAGC;
-			v = 0x60;
-		}else{
-			s[rF] &= ~FLAGC;
-			v = 0;
-		}
-		if((s[rA] & 0xf) > 9 || (s[rF] & FLAGH) != 0)
-			v |= 6;
-		w = s[rA];
-		if((s[rF] & FLAGN) != 0)
-			s[rA] -= v;
-		else
-			s[rA] += v;
+	case 0x27:{
+		int n = 0;
+		int r = 0;
+
+		if((s[rA] & 0x0f) > 0x09 || (s[rF] & FLAGH) != 0)
+			n += 0x06;
+		if(s[rA] >= 0x9a || (s[rF] & FLAGC) != 0)
+			n += 0x60;
+		r = s[rA] + n;
 		s[rF] &= ~(FLAGV|FLAGS|FLAGZ|FLAGH);
-		if(((s[rA] ^ w) & 0x10) != 0)
+		if((s[rA] ^ n ^ r) & 0x10)
 			s[rF] |= FLAGH;
+		if(r >= 0x100)
+			s[rF] |= FLAGC;
+		s[rA] = r;
 		if(!parity(s[rA]))
 			s[rF] |= FLAGV;
 		if(s[rA] == 0)
@@ -742,6 +773,7 @@ z80step(void)
 		if((s[rA] & 0x80) != 0)
 			s[rF] |= FLAGS;
 		return 4;
+	}
 	case 0x37: s[rF] = s[rF] | FLAGC; return 4;
 	case 0x08:
 		swap(rA);
@@ -817,7 +849,7 @@ z80step(void)
 	case 0xc5: push8(s[rB]); push8(s[rC]); return 11;
 	case 0xd5: push8(s[rD]); push8(s[rE]); return 11;
 	case 0xe5: push8(s[rH]); push8(s[rL]); return 11;
-	case 0xf5: push8(s[rA]); push8(s[rF]); return 11;
+	case 0xf5: push8(s[rA]); push8(s[rF] & ~0x28 | 2); return 11;
 	case 0xc6: return alu(0, 8);
 	case 0xd6: return alu(2, 8);
 	case 0xe6: return alu(4, 8);
@@ -876,11 +908,21 @@ z80step(void)
 	exit(1);
 }
 
+uint64_t cyclecount;
+
 int main(int argc, char **argv)
 {
-	logfile = fopen("zlog.txt", "w");
-	FILE *f = fopen("4kbas32.bin", "rb");
-	fread(memory, 1, 65536, f);
+	//logfile = fopen("zlog.txt", "w");
+	FILE *f = fopen("8080EX1.COM", "rb");
+	memory[5] = 0xd3;
+	memory[6] = 0xcc;
+	memory[7] = 0xc9;
+	fread(memory + 0x100, 1, 65536, f);
+	//memory[0x120] += 6;
 	fclose(f);
-	while(spc != 0x1f8) z80step();
+	spc = 0x100;
+	while(spc != 0){
+		z80step();
+		cyclecount++;
+	}
 }

@@ -218,7 +218,7 @@ module cpu(
 		end
 		ALU_SUB, ALU_SBB, ALU_CMP: begin
 			{alu_carry_out, aluOut} = rA - aluIn - (rPSR[0] & (alu_op == ALU_SBB));
-			alu_aux_carry_out = (((rA & 15) - (aluIn & 15) - (rPSR[0] & (alu_op == ALU_SBB))) & 16) != 0;
+			alu_aux_carry_out = (((rA & 15) - (aluIn & 15) - (rPSR[0] & (alu_op == ALU_SBB))) & 16) == 0;
 		end
 		ALU_AND: begin
 			aluOut = rA & aluIn;
@@ -252,22 +252,14 @@ module cpu(
 			alu_carry_out = 1'b1;
 		end
 		ALU_DAA: begin : daa
-			reg [7:0] a;
-
-			if(rA[3:0] > 9 || rPSR[4]) begin
-				a = rA + 6;
-				alu_aux_carry_out = rA[3:0] > 9;
-			end else begin
-				a = rA;
-				alu_aux_carry_out = 1'b0;
-			end
-			if(a[7:4] > 9 || rPSR[0]) begin
-				aluOut = a + 8'h60;
-				alu_carry_out = a[7:4] > 9;
-			end else begin
-				aluOut = a;
-				alu_carry_out = 1'b0;
-			end
+			reg [7:0] value;
+            value = 8'h00;
+            if(rA[3:0] > 9 || rPSR[4])
+                value[3:0] = 6;
+            if(rA >= 8'h9a || rPSR[0])
+                value[7:4] = 6;
+            {alu_carry_out, aluOut} = (rA + value) | (rPSR[0] ? 9'h100 : 9'h000);
+            alu_aux_carry_out = (((rA & 15) + (value & 15)) & 16) != 0;
 		end
 		ALU_INC: begin
 			{alu_carry_out, aluOut} = aluIn + 1;
@@ -275,7 +267,7 @@ module cpu(
 		end
 		ALU_DEC: begin
 			{alu_carry_out, aluOut} = aluIn - 1;
-			alu_aux_carry_out = (aluIn & 15) == 0;
+			alu_aux_carry_out = (aluIn & 15) != 0;
 		end
 		endcase
 	end
