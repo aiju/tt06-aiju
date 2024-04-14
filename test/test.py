@@ -156,6 +156,8 @@ FLAGZ = 0x40
 FLAGS = 0x80
 
 def parity(data):
+  if isinstance(data, Sym):
+    return data.parity()
   while data > 1:
     data = data >> 1 ^ (data & 1)
   return data
@@ -205,7 +207,11 @@ class CPU:
     self.rL = 0
     self.rPC = 0
     self.rSP = 0
-    self.rPSR = 2
+    self.fC = False
+    self.fP = False
+    self.fH = False
+    self.fS = False
+    self.fZ = False
     self.halted = False
     self.bus_model = bus_model
   async def read(self, addr, io=False):
@@ -257,6 +263,14 @@ class CPU:
     lo = await self.fetch()
     hi = await self.fetch()
     return lo | hi << 8
+  def getPSR(self):
+    return int(self.fC) | 2 | int(self.fP) << 2 | int(self.fH) << 4 | int(self.fZ) << 6 | int(self.fS) << 7
+  def setPSR(self, value):
+    self.fC = (value & FLAGC) != 0
+    self.fP = (value & FLAGP) != 0
+    self.fH = (value & FLAGH) != 0
+    self.fZ = (value & FLAGZ) != 0
+    self.fS = (value & FLAGS) != 0
   async def step(self):
     if self.halted:
       return False
@@ -274,22 +288,20 @@ class CPU:
       'S': (data & 0x80) != 0,
       'P': not parity(data)
     }
-    def do_flag(c, v):
-      if v == True:
-        self.rPSR |= c
-      elif v == False:
-        self.rPSR &= ~c
+    def do_flag(n, v):
+      if isinstance(v, bool) or isinstance(v, Sym):
+        setattr(self, 'f'+n, v)
       elif v in data_flags:
-        do_flag(c, data_flags[v])
+        setattr(self, 'f'+n, data_flags[v])
       elif v == None:
         pass
       else:
         assert False
-    do_flag(FLAGS, S)
-    do_flag(FLAGZ, Z)
-    do_flag(FLAGP, P)
-    do_flag(FLAGC, C)
-    do_flag(FLAGH, H)
+    do_flag('S', S)
+    do_flag('Z', Z)
+    do_flag('P', P)
+    do_flag('C', C)
+    do_flag('H', H)
   @instruction(0x00)
   async def iNOP(self):
     pass
@@ -308,14 +320,14 @@ class CPU:
   @instruction(0x80, {'op':(5,3), 'src':(2,0)})
   async def iALU(self, op, src):
     data = await self.getRegM(src)
-    (result, carry, half_carry) = alu_op(op, self.rA, data, (self.rPSR & FLAGC) != 0)
+    (result, carry, half_carry) = alu_op(op, self.rA, data, self.fC)
     if op != 7:
       self.rA = result
     self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
   @instruction(0xc6, {'op':(5,3)})
   async def iALU_d8(self, op):
     data = await self.fetch()
-    (result, carry, half_carry) = alu_op(op, self.rA, data, (self.rPSR & FLAGC) != 0)
+    (result, carry, half_carry) = alu_op(op, self.rA, data, self.fC)
     if op != 7:
       self.rA = result
     self.flags(result, S='S', Z='Z', P='P', C=carry, H=half_carry)
@@ -340,7 +352,7 @@ class CPU:
   @instruction(0xf5)
   async def iPUSH_AF(self):
     await self.push(self.rA)
-    await self.push(self.rPSR)
+    await self.push(self.getPSR())
   @instruction(0xc1)
   async def iPOP_BC(self):
     self.rC = await self.pop()
@@ -355,7 +367,7 @@ class CPU:
     self.rH = await self.pop()
   @instruction(0xf1)
   async def iPOP_AF(self):
-    self.rPSR = (await self.pop()) & ~0x28 | 2
+    self.setPSR(await self.pop())
     self.rA = await self.pop()
   @instruction(0x01)
   async def iLXI_BC(self):
@@ -398,22 +410,22 @@ class CPU:
     self.rA = (self.rA >> 1 | self.rA << 7) & 0xff
   @instruction(0x17)
   async def iRAL(self):
-    c = self.rPSR & 1
+    c = int(self.fC)
     self.flags(0, C=(self.rA & 0x80) != 0)
     self.rA = (self.rA << 1 | c) & 0xff
   @instruction(0x1f)
   async def iRAR(self):
-    c = self.rPSR & 1
+    c = int(self.fC)
     self.flags(0, C=(self.rA & 1) != 0)
     self.rA = (self.rA >> 1 | c << 7) & 0xff
   @instruction(0x27)
   async def iDAA(self):
     value = 0
-    if (self.rA & 0x0f) > 9 or (self.rPSR & FLAGH) != 0:
+    if (self.rA & 0x0f) > 9 or self.fH:
       value += 0x06
-    if self.rA >= 0x9a or (self.rPSR & FLAGC) != 0:
+    if self.rA >= 0x9a or self.fC:
       value += 0x60
-    old_carry = (self.rPSR & FLAGC) != 0
+    old_carry = self.fC
     self.rA, carry, half_carry = addition(self.rA, value, False)
     self.flags(self.rA, S='S', Z='Z', P='P', C=(old_carry or carry), H=half_carry)
   @instruction(0x2f)
@@ -424,7 +436,7 @@ class CPU:
     self.flags(0, C=True)
   @instruction(0x3f)
   async def iCMC(self):
-    self.rPSR ^= FLAGC
+    self.fC = not self.fC
   @instruction(0xcd)
   async def iCALL(self):
     target = await self.fetch16()
@@ -438,8 +450,8 @@ class CPU:
     self.rPC = lo | hi << 8
   def check_cond(self, cond):
     assert 0 <= cond <= 7
-    flag = [FLAGZ, FLAGC, FLAGP, FLAGS][cond>>1]
-    return ((self.rPSR & flag) != 0) == ((cond & 1) != 0)
+    flag = [self.fZ, self.fC, self.fP, self.fS][cond>>1]
+    return flag == ((cond & 1) != 0)
   @instruction(0xc4, {'cond':(5,3)})
   async def iCALLcc(self, cond):
     target = await self.fetch16()
@@ -579,7 +591,7 @@ class CPU:
     await self.bus_model.enter_debug()
     mapping = [
       ('A', 15, self.rA), ('B', 8, self.rB), ('C', 9, self.rC), ('D', 10, self.rD),
-      ('E', 11, self.rE), ('H', 12, self.rH), ('L', 13, self.rL), ('PSR', 6, self.rPSR),
+      ('E', 11, self.rE), ('H', 12, self.rH), ('L', 13, self.rL), ('PSR', 6, self.getPSR()),
       ('PC', (17, 16), self.rPC), ('SP', (5,4), self.rSP)
     ]
     for name, addr, expected in mapping:
@@ -918,3 +930,154 @@ async def test_exerciser(dut):
     n += 1
     if (n % 1000000) == 0:
       print(('%9d' % n) + '\b' * 9, end='', flush=True)
+
+class SymbolicMemory:
+  def __init__(self, executor):
+    self.executor = executor
+    self.contents = {}
+    self.ptr = 0
+  def read(self, addr):
+    if not addr in self.contents:
+      self.contents[addr] = self.executor.var('M%.4x' % addr)
+    return self.contents[addr]
+  def write(self, addr, value):
+    self.contents[addr] = value
+  def append(self, values):
+    for i in values:
+      self.write(self.ptr, i)
+      self.ptr += 1
+
+class SymbolicExecutor:
+  def __init__(self):
+    self.variables = {}
+    self.trace = []
+  def var(self, var):
+    if not var in self.variables:
+      self.variables[var] = Sym(self, 'var', var)
+    return self.variables[var]
+  def eval(self, val):
+    if isinstance(val, Sym):
+      fn = val.c[0]
+      return getattr(self, fn)(*val.c[1:])
+    else:
+      return val
+  def parity(self, val):
+    valp = self.eval(val)
+    if isinstance(valp, Sym):
+      return Sym(self, 'parity', valp)
+    else:
+      return parity(valp)
+  def force_bool(self, val):
+    assert isinstance(val, Sym)
+    if val.c[0] == 'not':
+      return not self.force_bool(val.c[1])
+    for t in self.trace:
+      if self.exact_match(val, t):
+        return True
+      if self.exact_match(Sym(self, 'not', val), t):
+        return False
+    self.trace.append(val)
+    return True
+  def backtrack(self):
+    for i in reversed(range(len(self.trace))):
+      t = self.trace[i]
+      if t.c[0] != 'not':
+        self.trace = self.trace[:i] + [Sym(self, 'not', t)]
+        return True
+    return False
+  def find_variables(self, val):
+    if isinstance(val, Sym):
+      return val.variables()
+    return []
+  def exact_match(self, a, b):
+    if isinstance(a, Sym) != isinstance(b, Sym):
+      return False
+    if not isinstance(a, Sym):
+      return a == b
+    if a.c[0] != b.c[0] or len(a.c) != len(b.c):
+      return False
+    for i in range(1,len(a.c)):
+      if not self.exact_match(a.c[i], b.c[i]):
+        return False
+    return True
+  # def permitted_values(self, v):
+  #   if v[0] == 'r' or v[0] == 'M':
+  #     return range(256)
+  #   if v[0] == 'f':
+  #     return [False, True]
+  #   assert False
+  # def make_true(self, expr):
+  #   def try_assignments(variables):
+  #     if len(variables) == 0:
+  #       e = self.eval(expr)
+  #       assert not isinstance(e, Sym)
+  #       return bool(e)
+  #     else:
+  #       v = variables[0]
+  #       anyTrue = False
+  #       old = self.variables[v]
+  #       assert old is Sym
+  #       for val in self.permitted_values(v):
+  #         self.variables[v] = val
+  #         if try_assignments(variables[1:]):
+  #           anyTrue = True
+  #           break
+  #       self.variables[v] = old
+  #       return anyTrue
+  #   expr = self.eval(expr)
+  #   variables = self.find_variables(expr)
+  #   if try_assignments(variables):
+
+class Sym:
+  def __init__(self, executor, *c):
+    assert isinstance(executor, SymbolicExecutor)
+    self.executor = executor
+    assert len(c) >= 0 and isinstance(c[0], str)
+    self.c = c
+  def __repr__(self):
+    return 'Sym' + repr(self.c)
+  def variables(self):
+    if self.c[0] == 'var':
+      return [self.c[1]]
+    return reduce(operator.add, map(self.executor.find_variables, self.c[1:]), [])
+  def parity(self):
+    return self.executor.parity(self)
+  def __bool__(self):
+    return self.executor.force_bool(self)
+
+def make_sym_methods(name):
+  def exec_method(self, *args):
+    evalled = list(map(self.eval, args))
+    if any([isinstance(x, Sym) for x in evalled]):
+      return Sym(self, name, *evalled)
+    else:
+      return getattr(evalled[0], '__' + name + '__')(*evalled[1:])
+  def sym_method(self, *args):
+    return getattr(self.executor, name)(self, *args)
+  setattr(SymbolicExecutor, name, exec_method)
+  setattr(Sym, '__' + name + '__', sym_method)
+
+for i in ['add', 'sub', 'and', 'or', 'xor', 'le', 'ge', 'lt', 'gt', 'rsh', 'eq', 'ne']:
+  make_sym_methods(i)
+
+@cocotb.test(skip=True)
+async def test_symbolic(dut):
+  exec = SymbolicExecutor()
+  while True:
+    print(exec.trace)
+    try:
+      memory = SymbolicMemory(exec)
+      cpu = CPU(DummyBusModel(memory, RandomIOModel()))
+      for r in ['A','B','C','D','E','H','L']:
+        setattr(cpu, 'r'+r, exec.var('r'+r))
+      for f in ['C','P','H','Z','S']:
+        setattr(cpu, 'f'+r, exec.var('f'+f))
+      memory.write(0x00, 0xc6)
+      await cpu.step()
+      print(exec.trace)
+      for x in ['rA', 'rB', 'rC', 'rD', 'rE', 'rH', 'rL', 'fC', 'fP', 'fH', 'fZ', 'fS']:
+        print(x, getattr(cpu, x))
+    except(AssertionError):
+      pass
+    if not exec.backtrack():
+      break
