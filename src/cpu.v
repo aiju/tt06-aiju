@@ -6,6 +6,7 @@ module cpu(
     output reg memory_read,
     output reg memory_write,
     output reg [15:0] memory_addr,
+    output reg memory_io,
     output reg [7:0] memory_wdata,
     input wire [7:0] memory_rdata,
     input wire memory_done,
@@ -80,6 +81,8 @@ module cpu(
     localparam CPU_DAD5 = 53;
     localparam CPU_DAD6 = 54;
     localparam CPU_DAD7 = 55;
+    localparam CPU_IO0 = 56;
+    localparam CPU_IO1 = 57;
     localparam CPU_DEBUG0 = 62;
     localparam CPU_DEBUG1 = 63;
 
@@ -101,8 +104,8 @@ module cpu(
 	wire iCALLcc = (rIR & ~8'h38) == 8'b1100_0100;
 	wire iRST = (rIR & ~8'h38) == 8'b1100_0111;
 	wire iRET = rIR == 8'hC9;
-	wire iRETcc = (rIR & ~8'h30) == 8'b1100_0000;
-	wire iJMPcc = (rIR & ~8'h30) == 8'b1100_0010;
+	wire iRETcc = (rIR & ~8'h38) == 8'b1100_0000;
+	wire iJMPcc = (rIR & ~8'h38) == 8'b1100_0010;
 	wire iPCHL = rIR == 8'hE9;
 	wire iSPHL = rIR == 8'hF9;
 	wire iINR = (rIR & ~8'h38) == 8'b0000_0100;
@@ -116,6 +119,9 @@ module cpu(
     wire iXCHG = rIR == 8'b1110_1011;
     wire iXTHL = rIR == 8'b1110_0011;
     wire iDAD = (rIR & ~8'h30) == 8'b0000_1001;
+    wire iIN = rIR == 8'b1101_1011;
+    wire iOUT = rIR == 8'b1101_0011;
+    wire iNOP = rIR == 8'b0000_0000;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -140,8 +146,10 @@ module cpu(
 	end
 
 	reg [5:0] decode_goto;
+    reg undefined;
 	always @(*) begin
 		decode_goto = CPU_FETCH;
+        undefined = 1'b0;
 		case(1'b1)
 		iMOV: decode_goto = CPU_MOV;
 		iALU, iALUI: decode_goto = CPU_ALU0;
@@ -163,8 +171,16 @@ module cpu(
 		iLDAX, iSTAX: decode_goto = CPU_LDAXSTAX0;
         iXCHG, iXTHL: decode_goto = CPU_XCHG0;
         iDAD: decode_goto = CPU_DAD0;
+        iIN, iOUT: decode_goto = CPU_IO0;
+        iNOP: decode_goto = CPU_FETCH;
+        default: undefined = 1'b1;
 		endcase
 	end
+
+    always @(posedge clk) begin
+        if(state == CPU_DECODE && undefined)
+            $display("undefined opcode %x", rIR);
+    end
 
 	reg [7:0] aluIn;
 	reg [7:0] aluOut;
@@ -264,18 +280,19 @@ module cpu(
 		endcase
 	end
 	wire alu_zero = aluOut == 0;
-	wire alu_parity = ^aluOut;
+	wire alu_parity = ~^aluOut;
 	wire alu_sign = aluOut[7];
 	wire [7:0] alu_flags = {alu_sign, alu_zero, 1'b0, alu_aux_carry_out, 1'b0, alu_parity, 1'b1, alu_carry_out};
 
 	wire cycle_done = !memory_read && !memory_write || memory_done;
 	wire pc_increment =
 		state == CPU_FETCH && !debug_req
-        || state == CPU_MVI0 || state == CPU_JMP0
+        || state == CPU_MVI0 || state == CPU_JMP0 || state == CPU_JMP1 && iJMPcc && !condition
 		|| state == CPU_ALU0 && iALUI
 		|| state == CPU_LXI0 || state == CPU_LXI1
 		|| state == CPU_DIRECT0 || state == CPU_DIRECT1
-		|| (state == CPU_CALL0 || state == CPU_CALL1) && !iRST;
+		|| (state == CPU_CALL0 || state == CPU_CALL1) && !iRST
+        || state == CPU_IO0;
 	wire al_increment = state == CPU_DIRECT2;
 	wire sp_decrement =
 		state == CPU_PUSH0 || state == CPU_PUSH1
@@ -544,6 +561,10 @@ module cpu(
                     state <= CPU_DAD7;
                 CPU_DAD7:
                     state <= CPU_FETCH;
+                CPU_IO0:
+                    state <= CPU_IO1;
+                CPU_IO1:
+                    state <= CPU_FETCH;
 				endcase
 			end
 		end
@@ -554,8 +575,9 @@ module cpu(
 		memory_wdata = 8'bx;
 		memory_read = 1'b0;
 		memory_write = 1'b0;
+        memory_io = 1'b0;
 		case(state)
-		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1, CPU_LXI0, CPU_LXI1, CPU_DIRECT0, CPU_DIRECT1: begin
+		CPU_FETCH, CPU_MVI0, CPU_JMP0, CPU_JMP1, CPU_LXI0, CPU_LXI1, CPU_DIRECT0, CPU_DIRECT1, CPU_IO0: begin
 			memory_addr = rPC;
 			memory_read = 1'b1;
 		end
@@ -632,11 +654,20 @@ module cpu(
                 memory_addr = rSP;
             end
         end
+        CPU_IO1: begin
+            memory_addr = {8'b0, AL[7:0]};
+            memory_wdata = DB;
+            memory_read = iIN;
+            memory_write = iOUT;
+            memory_io = 1'b1;
+        end
         CPU_DEBUG0: begin
             memory_addr = 16'hCAFE;
             memory_read = 1'b1;
+            memory_io = 1'b1;
         end
         CPU_DEBUG1: begin
+            memory_io = 1'b1;
             if(dbgREAD) begin
                 memory_addr = 16'hCAFF;
                 memory_write = 1'b1;
@@ -868,6 +899,18 @@ module cpu(
         CPU_DAD7: begin
             db_src = DB_ALL;
             db_dst = DB_A;
+        end
+        CPU_IO0: begin
+            db_src = DB_MEM;
+            db_dst = DB_ALL;
+        end
+        CPU_IO1: begin
+            if(iIN) begin
+                db_src = DB_MEM;
+                db_dst = DB_A;
+            end
+            if(iOUT)
+                db_src = DB_A;
         end
 		endcase
 	end

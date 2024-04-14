@@ -10,10 +10,12 @@ module bus_if(
 	input wire [7:0] bus_data_in,
 	output reg [7:0] bus_data_out,
 	output reg bus_output_enable,
+	output wire bus_io,
 
     input wire memory_read,
     input wire memory_write,
     input wire [15:0] memory_addr,
+	input wire memory_io,
     input wire [7:0] memory_wdata,
     output reg [7:0] memory_rdata,
     output reg memory_done
@@ -54,6 +56,8 @@ module bus_if(
 			end
 		end
 	end
+
+	assign bus_io = memory_io;
 
 	always @(*) begin
 		bus_output_enable = 1'b0;

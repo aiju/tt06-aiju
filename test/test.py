@@ -22,9 +22,16 @@ class Memory:
       self.write(self.ptr, i)
       self.ptr += 1
 
+class RandomIOModel:
+  def io_in(self, port):
+    return random.randint(0, 255)
+  def io_out(self, port, data):
+    pass
+
 class BusModel:
-  def __init__(self, memory, dut):
+  def __init__(self, memory, io_model, dut):
     self.memory = memory
+    self.io_model = io_model
     self.dut = dut
   async def handshake_begin(self):
     while (self.dut.uo_out.value & 1) == 0:
@@ -42,75 +49,80 @@ class BusModel:
     self.dut.uio_in.value = value
   def clear_bus(self):
     self.dut.uio_in.value = cocotb.binary.BinaryValue('xxxxxxxx')
-  def assert_state(self, state):
-    assert (self.dut.uo_out.value >> 1 & 3) == state
-  async def bus_read(self, addr, value):
+  def assert_state(self, state, io):
+    assert (self.dut.uo_out.value >> 1 & 7) == (state | int(io) << 2)
+  async def bus_read(self, addr, value, io):
     await self.handshake_begin()
-    self.assert_state(0)
+    self.assert_state(0, io)
     assert self.read_bus() == (addr & 0xff)
     await self.handshake_end()
     await self.handshake_begin()
-    self.assert_state(1)
+    self.assert_state(1, io)
     assert self.read_bus() == (addr >> 8)
     await self.handshake_end()
     await self.handshake_begin()
-    self.assert_state(2)
+    self.assert_state(2, io)
     self.write_bus(value)
     await ClockCycles(self.dut.clk, 1)
     await self.handshake_end()
     self.clear_bus()
-  async def read(self, addr):
-    value = self.memory.read(addr)
-    await self.bus_read(addr, value)
+  async def read(self, addr, io=False):
+    if io:
+      value = self.io_model.io_in(addr)
+    else:
+      value = self.memory.read(addr)
+    await self.bus_read(addr, value, io)
     return value
-  async def dummy_read(self):
+  async def dummy_read(self, io):
     await self.handshake_begin()
-    self.assert_state(0)
+    self.assert_state(0, io)
     await self.handshake_end()
     await self.handshake_begin()
-    self.assert_state(1)
+    self.assert_state(1, io)
     await self.handshake_end()
     await self.handshake_begin()
-    self.assert_state(2)
+    self.assert_state(2, io)
     await self.handshake_end()
-  async def bus_write(self, addr):
+  async def bus_write(self, addr, io):
     await self.handshake_begin()
-    self.assert_state(0)
+    self.assert_state(0, io)
     assert self.read_bus() == (addr & 0xff)
     await self.handshake_end()
     await self.handshake_begin()
-    self.assert_state(1)
+    self.assert_state(1, io)
     assert self.read_bus() == (addr >> 8)
     await self.handshake_end()
     await self.handshake_begin()
-    self.assert_state(3)
+    self.assert_state(3, io)
     value = self.read_bus()
     await self.handshake_end()
     return value
-  async def write(self, addr, value):
-    self.memory.write(addr, value)
-    assert (await self.bus_write(addr)) == value
+  async def write(self, addr, value, io=False):
+    if io:
+      self.io_model.io_out(addr, value)
+    else:
+      self.memory.write(addr, value)
+    assert (await self.bus_write(addr, io)) == value
   async def halt(self):
     await ClockCycles(self.dut.clk, 20)
-    assert (self.dut.uo_out.value & 8) != 0
+    assert (self.dut.uo_out.value & 0x40) != 0
   async def enter_debug(self):
-    print('enter debug')
     self.dut.ui_in.value = self.dut.ui_in.value | 2
     await ClockCycles(self.dut.clk, 1)
-    if (self.dut.uo_out.value & 8) == 0:
-      await self.dummy_read()
+    if (self.dut.uo_out.value & 0x40) == 0:
+      await self.dummy_read(False)
     await ClockCycles(self.dut.clk, 20)
     assert (self.dut.uo_out.value & 0x20) != 0
     self.dut.ui_in.value = self.dut.ui_in.value & ~2
     await ClockCycles(self.dut.clk, 1)
   async def debug_read(self, addr):
-    await self.bus_read(0xcafe, addr)
-    return await self.bus_write(0xcaff)
+    await self.bus_read(0xcafe, addr, True)
+    return await self.bus_write(0xcaff, True)
   async def debug_write(self, addr, value):
-    await self.bus_read(0xcafe, 0x80 | addr)
-    await self.bus_read(0xcaff, value)
+    await self.bus_read(0xcafe, 0x80 | addr, True)
+    await self.bus_read(0xcaff, value, True)
   async def leave_debug(self):
-    await self.bus_read(0xcafe, 0x40)
+    await self.bus_read(0xcafe, 0x40, True)
     while (self.dut.uo_out.value & 0x20) != 0:
       await ClockCycles(self.dut.clk, 1)
 
@@ -196,10 +208,10 @@ class CPU:
     self.rPSR = 2
     self.halted = False
     self.bus_model = bus_model
-  async def read(self, addr):
-    return await self.bus_model.read(addr)
-  async def write(self, addr, value):
-    await self.bus_model.write(addr, value)
+  async def read(self, addr, io=False):
+    return await self.bus_model.read(addr, io)
+  async def write(self, addr, value, io=False):
+    await self.bus_model.write(addr, value, io)
   async def push(self, value):
     self.rSP = (self.rSP - 1) & 0xffff
     await self.bus_model.write(self.rSP, value)
@@ -260,7 +272,7 @@ class CPU:
     data_flags = {
       'Z': data == 0,
       'S': (data & 0x80) != 0,
-      'P': parity(data)
+      'P': not parity(data)
     }
     def do_flag(c, v):
       if v == True:
@@ -492,17 +504,17 @@ class CPU:
   async def iDCX_BC(self):
     self.rC = (self.rC - 1) & 0xff
     if self.rC == 0xff:
-      self.rB = (self.rB + 1) & 0xff
+      self.rB = (self.rB - 1) & 0xff
   @instruction(0x1B)
   async def iDCX_DE(self):
     self.rE = (self.rE - 1) & 0xff
     if self.rE == 0xff:
-      self.rD = (self.rD + 1) & 0xff
+      self.rD = (self.rD - 1) & 0xff
   @instruction(0x2B)
   async def iDCX_HL(self):
     self.rL = (self.rL - 1) & 0xff
     if self.rL == 0xff:
-      self.rH = (self.rH + 1) & 0xff
+      self.rH = (self.rH - 1) & 0xff
   @instruction(0x3B)
   async def iDCX_SP(self):
     self.rSP = (self.rSP - 1) & 0xffff
@@ -550,6 +562,20 @@ class CPU:
     oldVal = self.rH
     self.rH = await self.read(self.rSP + 1)
     await self.write(self.rSP + 1, oldVal)
+  @instruction(0xfb)
+  async def iEI(self):
+    pass
+  @instruction(0xf3)
+  async def iDI(self):
+    pass
+  @instruction(0xdb)
+  async def iIN(self):
+    port = await self.fetch()
+    self.rA = await self.read(port, True)
+  @instruction(0xd3)
+  async def iOUT(self):
+    port = await self.fetch()
+    await self.write(port, self.rA, True)
   async def debug(self):
     await self.bus_model.enter_debug()
     mapping = [
@@ -576,9 +602,9 @@ class TestCodeGenerator:
     assert r >= 0 and r <= 7 and r != 6
     self.memory.append([0x06 | r << 3, value])
   def random_regs(self):
-    for i in range(8):
-      if i != 6:
-        self.set_reg(i, random.randint(0, 255))
+    self.memory.append([0x01, random.randint(0, 255), random.randint(0, 255), 0xc5, 0xf1])
+    for i in range(6):
+      self.set_reg(i, random.randint(0, 255))
   def check_regs(self):
     self.memory.append([0xc5, 0xd5, 0xe5, 0xf5])
   def test_code(self, code, **kwargs):
@@ -592,7 +618,7 @@ class TestCodeGenerator:
 
 
 async def timeout(dut):
-  await Timer(1000, units='ms')
+  await Timer(10000, units='ms')
   assert False and "TIMED OUT"
 
 async def setup_dut(dut):
@@ -614,7 +640,7 @@ def test():
       codegen = TestCodeGenerator(memory)
       await test_fn(dut, codegen)
       memory.append([0x76])
-      cpu = CPU(BusModel(memory, dut))
+      cpu = CPU(BusModel(memory, RandomIOModel(), dut))
       while await cpu.step():
         pass
     coco_test.__name__ = test_fn.__name__
@@ -673,8 +699,8 @@ async def test_RETcc(dut, codegen):
 async def test_JMPcc(dut, codegen):
   loc = 0x1000
   for cc in range(8):
-    for n in range(4):
-      codegen.test_code([0xc2, loc&0xff, loc>>8])
+    for n in range(16):
+      codegen.test_code([0xc2 | cc << 3, loc&0xff, loc>>8])
       codegen.memory.write(loc, 0x2f)
       codegen.memory.write(loc+1, 0xc3)
       codegen.memory.write(loc+2, codegen.memory.ptr & 0xff)
@@ -740,8 +766,8 @@ async def test_INR_DCR(dut, codegen):
 async def test_INX_DCX(dut, codegen):
   for op in range(2):
     for r in range(4):
-      codegen.test_code([0x03 | op | r << 4])
-      codegen.test_code([0x0E | r << 4, 0xFF, 0x03 | op | r << 4])
+      codegen.test_code([0x03 | op << 3 | r << 4])
+      codegen.test_code([0x0E | r << 4, [0xFF, 0x00][op], 0x03 | op << 3 | r << 4])
 
 @test()
 async def test_LDAX_STAX(dut, codegen):
@@ -782,6 +808,11 @@ async def test_DAD(dut, codegen):
     for n in range(8):
       codegen.test_code([0x09 | r << 4])
 
+@test()
+async def test_IO(dut, codegen):
+  codegen.test_code([0xDB, random.randint(0, 255)])
+  codegen.test_code([0xD3, random.randint(0, 255)])
+
 @cocotb.test()
 async def test_DEBUG(dut):
   await setup_dut(dut)
@@ -789,7 +820,40 @@ async def test_DEBUG(dut):
   codegen = TestCodeGenerator(memory)
   codegen.test_code([0x00])
   memory.append([0x76])
-  cpu = CPU(BusModel(memory, dut))
+  cpu = CPU(BusModel(memory, RandomIOModel(), dut))
   while await cpu.step():
     pass
   await cpu.debug()
+
+class BasicIOModel:
+  def __init__(self):
+    self.input_buffer = " 20000\r\rY\r10 INPUT R\r20 PRINT 3.14159 * R * R\r30 END\rRUN\r 4\r"
+  def io_in(self, port):
+    if port == 0:
+      return self.input_buffer == ""
+    elif port == 1:
+      c = ord(self.input_buffer[0])
+      self.input_buffer = self.input_buffer[1:]
+      return c
+    elif port == 0xff:
+      return 0
+    else:
+      print("read from unknown IO port %.2x" % port)
+    return 0
+  def io_out(self, port, data):
+    if port == 1:
+      print(chr(data & 0x7f), end='', flush=True)
+    else:
+      print("write to unknown IO port %.2x data %.2x" % (port, data))
+
+@cocotb.test(skip=True)
+async def test_basic(dut):
+  await setup_dut(dut)
+  memory = Memory()
+  with open('4kbas32.bin', 'rb') as file:
+    basic = list(file.read())
+  for i in range(len(basic)):
+    memory.write(i, basic[i])
+  cpu = CPU(BusModel(memory, BasicIOModel(), dut))
+  while cpu.rPC != 0x1f8:
+    await cpu.step()

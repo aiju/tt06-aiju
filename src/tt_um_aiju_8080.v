@@ -20,6 +20,7 @@ module tt_um_aiju_8080 (
 	// Beginning of automatic wires (for undeclared instantiated-module outputs)
 	wire [7:0]	bus_data_out;		// From bus_if_i of bus_if.v
 	wire		bus_handshake_req;	// From bus_if_i of bus_if.v
+	wire		bus_io;			// From bus_if_i of bus_if.v
 	wire		bus_output_enable;	// From bus_if_i of bus_if.v
 	wire [1:0]	bus_state;		// From bus_if_i of bus_if.v
 	wire		cpu_fetch;		// From cpu_i of cpu.v
@@ -27,6 +28,7 @@ module tt_um_aiju_8080 (
 	wire		cpu_in_debug;		// From cpu_i of cpu.v
 	wire [15:0]	memory_addr;		// From cpu_i of cpu.v
 	wire		memory_done;		// From bus_if_i of bus_if.v
+	wire		memory_io;		// From cpu_i of cpu.v
 	wire [7:0]	memory_rdata;		// From bus_if_i of bus_if.v
 	wire		memory_read;		// From cpu_i of cpu.v
 	wire [7:0]	memory_wdata;		// From cpu_i of cpu.v
@@ -36,10 +38,10 @@ module tt_um_aiju_8080 (
 	assign uo_out[0] = bus_handshake_req;
 	assign uo_out[1] = bus_state[0];
 	assign uo_out[2] = bus_state[1];
-	assign uo_out[3] = cpu_halted;
+	assign uo_out[3] = bus_io;
 	assign uo_out[4] = cpu_fetch;
 	assign uo_out[5] = cpu_in_debug;
-	assign uo_out[6] = 1'b0;
+	assign uo_out[6] = cpu_halted;
 	assign uo_out[7] = 1'b0;
 
 	wire ext_bus_handshake_ack = ui_in[0];
@@ -70,6 +72,7 @@ module tt_um_aiju_8080 (
 			.bus_state	(bus_state[1:0]),
 			.bus_data_out	(bus_data_out[7:0]),
 			.bus_output_enable(bus_output_enable),
+			.bus_io		(bus_io),
 			.memory_rdata	(memory_rdata[7:0]),
 			.memory_done	(memory_done),
 			// Inputs
@@ -80,6 +83,7 @@ module tt_um_aiju_8080 (
 			.memory_read	(memory_read),
 			.memory_write	(memory_write),
 			.memory_addr	(memory_addr[15:0]),
+			.memory_io	(memory_io),
 			.memory_wdata	(memory_wdata[7:0]));
 
 	cpu cpu_i(/*AUTOINST*/
@@ -87,6 +91,7 @@ module tt_um_aiju_8080 (
 		  .memory_read		(memory_read),
 		  .memory_write		(memory_write),
 		  .memory_addr		(memory_addr[15:0]),
+		  .memory_io		(memory_io),
 		  .memory_wdata		(memory_wdata[7:0]),
 		  .cpu_fetch		(cpu_fetch),
 		  .cpu_halted		(cpu_halted),
