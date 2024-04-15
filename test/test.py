@@ -867,6 +867,9 @@ async def test_INT(dut):
       next_int -= 1
       if not await cpu.step():
         break
+  await cpu.step_and_interrupt(0xdf)
+  for i in range(10):
+    await cpu.step()
 
 class MSBasicIOModel:
   def __init__(self):

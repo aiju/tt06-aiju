@@ -469,6 +469,8 @@ module cpu(
                 CPU_HALT:
                     if(debug_req)
                         state <= CPU_DEBUG0;
+                    else if(int_latch)
+                        state <= CPU_FETCH;
 				CPU_MVI0:
 					state <= memory_operand ? CPU_MVI1 : CPU_FETCH;
 				CPU_MVI1:
