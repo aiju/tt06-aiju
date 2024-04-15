@@ -239,6 +239,15 @@ module cpu(
 	localparam ALU_DEC = 17;
 	localparam ALU_NOP = 31;
 
+    reg [7:0] daa_operand;
+    always @(*) begin
+        daa_operand = 8'h00;
+        if(rA[3:0] > 9 || rPSR[4])
+            daa_operand[3:0] = 6;
+        if(rA >= 8'h9a || rPSR[0])
+            daa_operand[7:4] = 6;
+    end
+
 	always @(*) begin
 		alu_carry_out = 1'b0;
 		alu_aux_carry_out = 1'b0;
@@ -283,15 +292,9 @@ module cpu(
 			aluOut = rA;
 			alu_carry_out = 1'b1;
 		end
-		ALU_DAA: begin : daa
-			reg [7:0] value;
-            value = 8'h00;
-            if(rA[3:0] > 9 || rPSR[4])
-                value[3:0] = 6;
-            if(rA >= 8'h9a || rPSR[0])
-                value[7:4] = 6;
-            {alu_carry_out, aluOut} = (rA + value) | (rPSR[0] ? 9'h100 : 9'h000);
-            alu_aux_carry_out = (((rA & 15) + (value & 15)) & 16) != 0;
+		ALU_DAA: begin
+            {alu_carry_out, aluOut} = (rA + daa_operand) | (rPSR[0] ? 9'h100 : 9'h000);
+            alu_aux_carry_out = (((rA & 15) + (daa_operand & 15)) & 16) != 0;
 		end
 		ALU_INC: begin
 			{alu_carry_out, aluOut} = aluIn + 1;
@@ -591,8 +594,10 @@ module cpu(
                     state <= CPU_FETCH;
                 CPU_EIDI:
                     state <= CPU_FETCH;
+`ifndef SYNTHESIS
                 default:
                     assert(0);
+`endif
 				endcase
 			end
 		end
