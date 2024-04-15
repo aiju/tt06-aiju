@@ -122,6 +122,13 @@ module cpu(
     wire iIN = rIR == 8'b1101_1011;
     wire iOUT = rIR == 8'b1101_0011;
     wire iNOP = rIR == 8'b0000_0000;
+    wire iEI = rIR == 8'b1111_1011;
+    wire iDI = rIR == 8'b1111_0011;
+    wire undefined =
+        (rIR & ~8'h38) == 8'b0000_0000 && !iNOP
+        || rIR == 8'b1101_1001
+        || (rIR & ~8'h30) == 8'b1100_1101 && !iCALL
+        || rIR == 8'b1100_1011;
 	wire memory_operand =
 		iMOV && (rIR[5:3] == 3'b110 || rIR[2:0] == 3'b110)
 		|| iALU && rIR[2:0] == 3'b110
@@ -146,10 +153,10 @@ module cpu(
 	end
 
 	reg [5:0] decode_goto;
-    reg undefined;
+    reg missing_decoder_case;
 	always @(*) begin
 		decode_goto = CPU_FETCH;
-        undefined = 1'b0;
+        missing_decoder_case = 1'b0;
 		case(1'b1)
 		iMOV: decode_goto = CPU_MOV;
 		iALU, iALUI: decode_goto = CPU_ALU0;
@@ -172,8 +179,9 @@ module cpu(
         iXCHG, iXTHL: decode_goto = CPU_XCHG0;
         iDAD: decode_goto = CPU_DAD0;
         iIN, iOUT: decode_goto = CPU_IO0;
-        iNOP: decode_goto = CPU_FETCH;
-        default: undefined = 1'b1;
+        iNOP, undefined: decode_goto = CPU_FETCH;
+        iEI, iDI: decode_goto = CPU_FETCH;
+        default: missing_decoder_case = 1'b1;
 		endcase
 	end
 
@@ -557,6 +565,8 @@ module cpu(
                     state <= CPU_IO1;
                 CPU_IO1:
                     state <= CPU_FETCH;
+                default:
+                    assert(0);
 				endcase
 			end
 		end
@@ -906,4 +916,60 @@ module cpu(
         end
 		endcase
 	end
+
+`ifdef FORMAL
+    initial state = CPU_FETCH;
+
+	default clocking
+		@(posedge clk);
+	endclocking
+	default disable iff(!rst_n);
+
+    assume property (memory_done |=> !memory_done);
+    assume property (debug_req && !cpu_in_debug |=> debug_req);
+
+    read_until_done: assert property (memory_read && !memory_done |=> memory_read);
+    write_until_done: assert property (memory_write && !memory_done |=> memory_write);
+    not_read_and_write: assert property (!memory_read || !memory_write);
+    stable_memory_addr: assert property (!$initstate && (memory_read && $past(memory_read) || memory_write && $past(memory_write)) && !$past(memory_done) |-> $stable(memory_addr) && $stable(memory_io));
+    stable_memory_wdata: assert property (!$initstate && memory_write && $past(memory_write) && !$past(memory_done) && state != CPU_DEBUG1 |-> $stable(memory_wdata));
+
+    assert property (state == CPU_ALU0 || state == CPU_ALU1 |-> iALU || iALUI);
+    assert property (state == CPU_HALT |-> iHALT);
+    assert property (state == CPU_POP0 || state == CPU_POP1 |-> iPOP);
+    assert property (state == CPU_PUSH0 || state == CPU_PUSH1 || state == CPU_PUSH2 |-> iPUSH);
+    assert property (state == CPU_PCHL0 || state == CPU_PCHL1 || state == CPU_PCHL2 |-> iPCHL);
+    assert property (state == CPU_RET0 || state == CPU_RET1 |-> iRET || iRETcc);
+    assert property (state == CPU_UNARY |-> iUNARY);
+    assert property (state == CPU_INRDCR0 || state == CPU_INRDCR1 |-> iINR || iDCR);
+    assert property (state == CPU_DAD0 || state == CPU_DAD1 || state == CPU_DAD2 || state == CPU_DAD3 || state == CPU_DAD4 || state == CPU_DAD5 || state == CPU_DAD6 || state == CPU_DAD7 |-> iDAD);
+    assert property (state == CPU_JMP0 || state == CPU_JMP1 |-> iJMP || iJMPcc);
+    assert property (state == CPU_INXDCX0 || state == CPU_INXDCX1 || state == CPU_INXDCX2 || state == CPU_INXDCX3 |-> iINX || iDCX);
+    assert property (state == CPU_MOV |-> iMOV);
+    assert property (state == CPU_DIRECT0 || state == CPU_DIRECT1 || state == CPU_DIRECT2 |-> iLDA || iSTA || iLHLD || iSHLD);
+    assert property (state == CPU_DIRECT3 |-> iLHLD || iSHLD);
+    assert property (state == CPU_MVI0 || state == CPU_MVI1 |-> iMVI);
+    assert property (state == CPU_LXI0 || state == CPU_LXI1 |-> iLXI);
+    assert property (state == CPU_LDAXSTAX0 || state == CPU_LDAXSTAX1 || state == CPU_LDAXSTAX2 |-> iLDAX || iSTAX);
+    assert property (state == CPU_SPHL0 || state == CPU_SPHL1 |-> iSPHL);
+    assert property (state == CPU_IO0 || state == CPU_IO1 |-> iIN || iOUT);
+    assert property (state == CPU_CALL0 || state == CPU_CALL1 || state == CPU_CALL2 || state == CPU_CALL3 |-> iCALL || iCALLcc || iRST);
+    assert property (state == CPU_XCHG0 || state == CPU_XCHG1 || state == CPU_XCHG2 || state == CPU_XCHG3 || state == CPU_XCHG4 || state == CPU_XCHG5 |-> iXCHG || iXTHL);
+
+    exactly_one_decode: assert property ($onehot({
+        iMOV, iALU, iALUI, iMVI, iJMP, iPUSH, iPOP, iHALT, iLXI, iLDA, iSTA, iLHLD, iSHLD,
+        iUNARY, iCALL, iCALLcc, iRST, iRET, iRETcc, iJMPcc, iPCHL, iSPHL, iINR, iDCR,
+        iINX, iDCX, iLDAX, iSTAX, iXCHG, iXTHL, iDAD, iIN, iOUT, iNOP, iEI, iDI,
+        undefined}));
+    inx_sp_dcx_sp: assert property ((!iINX_SP || iINX) && (!iDCX_SP || iDCX));
+    no_missing_cases: assert property (!missing_decoder_case);
+
+
+`ifdef LIVENESS
+    assume property (memory_read |-> ##[1:3] memory_done);
+    assume property (memory_write |-> ##[1:3] memory_done);
+    assert property (state != CPU_FETCH |-> ##[1:40] state == CPU_FETCH || state == CPU_HALT || state == CPU_DEBUG0 || state == CPU_DEBUG1);
+    assert property (debug_req && !cpu_in_debug |-> ##[1:40] cpu_in_debug);
+`endif
+`endif
 endmodule

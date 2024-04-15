@@ -1,0 +1,18 @@
+[tasks]
+basic
+liveness
+
+[options]
+mode prove
+liveness: depth 100
+
+[engines]
+smtbmc boolector
+
+[script]
+basic: read -formal bus_if.v
+liveness: read -formal -DLIVENESS bus_if.v
+prep -top bus_if
+
+[files]
+../src/bus_if.v

@@ -84,4 +84,39 @@ module bus_if(
 		endcase
 	end
 
+`ifdef FORMAL
+	initial begin
+		memory_state = MEMORY_IDLE;
+		memory_done = 1'b0;
+		bus_handshake_req = 1'b0;
+	end
+
+	default clocking
+		@(posedge clk);
+	endclocking
+	default disable iff(!rst_n);
+
+	assume property (!(memory_read && memory_write));
+	assume property (memory_read && !memory_done |=> memory_read);
+	assume property (memory_write && !memory_done |=> memory_write);
+	assume property ($rose(bus_handshake_ack) |-> $past(bus_handshake_req));
+	assume property ($fell(bus_handshake_ack) |-> $past(!bus_handshake_req));
+	assume property ((memory_read && $past(memory_read)) || (memory_write && $past(memory_write)) |-> $stable(memory_addr) && $stable(memory_wdata));
+
+	state_invariant: assert property (memory_state != MEMORY_IDLE |-> (memory_read || memory_write) && !memory_done);
+	done_one_cycle: assert property (memory_done |=> !memory_done);
+	done_only_if_active: assert property (memory_done |-> memory_read || memory_write);
+	req_only_when_active: assert property (memory_state == MEMORY_IDLE |-> !bus_handshake_req);
+	req_when_no_ack: assert property ($rose(bus_handshake_req) |-> !bus_handshake_ack);
+	req_falls_when_ack: assert property (!$initstate && $fell(bus_handshake_req) |-> bus_handshake_ack);
+	stable_bus_data_out: assert property (bus_handshake_req && $past(bus_handshake_req) && bus_output_enable |-> $stable(bus_data_out));
+	latch_bus_data: assert property (memory_done && memory_read |-> memory_rdata == $past(bus_data_in));
+
+`ifdef LIVENESS
+	assume property(bus_handshake_req |-> ##[1:5] bus_handshake_ack);
+	assume property(!bus_handshake_req |-> ##[1:5] !bus_handshake_ack);
+	liveness: assert property ((memory_read || memory_write) && !memory_done |-> ##[1:40] memory_done);
+`endif
+`endif
+
 endmodule

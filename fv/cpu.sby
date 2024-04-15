@@ -1,0 +1,18 @@
+[tasks]
+basic
+liveness
+
+[options]
+mode prove
+liveness: depth 60
+
+[engines]
+smtbmc boolector
+
+[script]
+basic: read -formal cpu.v
+liveness: read -formal -DLIVENESS cpu.v
+prep -top cpu
+
+[files]
+../src/cpu.v
