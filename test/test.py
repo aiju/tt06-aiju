@@ -217,6 +217,7 @@ class CPU:
     self.rPSR = 2
     self.halted = False
     self.bus_model = bus_model
+    self.int_enabled = False
   async def read(self, addr, io=False):
     return await self.bus_model.read(addr, io)
   async def write(self, addr, value, io=False):
@@ -277,9 +278,12 @@ class CPU:
     await cpu_opcodes[ir](self)
     return True
   async def step_and_interrupt(self, instr):
+    assert self.int_enabled
     await self.bus_model.set_int_req()
     await self.step()
     await self.bus_model.int_ack()
+    self.int_enabled = False
+    self.halted = False
     await self.bus_model.bus_read(self.rPC, instr, False)
     await cpu_opcodes[instr](self)
   def flags(self, data, S=None, Z=None, P=None, C=None, H=None):
@@ -578,10 +582,10 @@ class CPU:
     await self.write(self.rSP + 1, oldVal)
   @instruction(0xfb)
   async def iEI(self):
-    pass
+    self.int_enabled = True
   @instruction(0xf3)
   async def iDI(self):
-    pass
+    self.int_enabled = False
   @instruction(0xdb)
   async def iIN(self):
     port = await self.fetch()
@@ -856,7 +860,7 @@ async def test_INT(dut):
   memory.append([0xfb])
   for n in range(64):
     codegen.test_code([0x27])
-  memory.append([0x76])
+  memory.append([0x76, 0x76, 0x76, 0x76])
   cpu = CPU(BusModel(memory, RandomIOModel(), dut))
   next_int = random.randint(10,20)
   while True:
@@ -867,6 +871,21 @@ async def test_INT(dut):
       next_int -= 1
       if not await cpu.step():
         break
+
+@cocotb.test()
+async def test_INT_HALT(dut):
+  await setup_dut(dut)
+  memory = Memory()
+  codegen = TestCodeGenerator(memory)
+  memory.append([0xc3, 0x00, 0x10])
+  memory.ptr = 24
+  memory.append([0x2f, 0xfb, 0xc9])
+  memory.ptr = 0x1000
+  memory.append([0xfb])
+  memory.append([0x76])
+  cpu = CPU(BusModel(memory, RandomIOModel(), dut))
+  while await cpu.step():
+    pass
   await cpu.step_and_interrupt(0xdf)
   for i in range(10):
     await cpu.step()
