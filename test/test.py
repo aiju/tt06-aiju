@@ -882,7 +882,8 @@ async def test_INT_HALT(dut):
   memory.append([0x2f, 0xfb, 0xc9])
   memory.ptr = 0x1000
   memory.append([0xfb])
-  memory.append([0x76])
+  for i in range(10):
+    memory.append([0x76])
   cpu = CPU(BusModel(memory, RandomIOModel(), dut))
   while await cpu.step():
     pass
