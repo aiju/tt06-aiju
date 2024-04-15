@@ -26,6 +26,7 @@ module tt_um_aiju_8080 (
 	wire		cpu_fetch;		// From cpu_i of cpu.v
 	wire		cpu_halted;		// From cpu_i of cpu.v
 	wire		cpu_in_debug;		// From cpu_i of cpu.v
+	wire		cpu_int_ack;		// From cpu_i of cpu.v
 	wire [15:0]	memory_addr;		// From cpu_i of cpu.v
 	wire		memory_done;		// From bus_if_i of bus_if.v
 	wire		memory_io;		// From cpu_i of cpu.v
@@ -42,24 +43,32 @@ module tt_um_aiju_8080 (
 	assign uo_out[4] = cpu_fetch;
 	assign uo_out[5] = cpu_in_debug;
 	assign uo_out[6] = cpu_halted;
-	assign uo_out[7] = 1'b0;
+	assign uo_out[7] = cpu_int_ack;
 
 	wire ext_bus_handshake_ack = ui_in[0];
 	wire ext_debug_req = ui_in[1];
+	wire ext_int_req = ui_in[2];
 
 	wire bus_handshake_ack;
-	sync bus_handshake_ack_sync(
+	(*keep_hierarchy*) sync bus_handshake_ack_sync(
 		.clk(clk),
 		.rst_n(rst_n),
 		.in(ext_bus_handshake_ack),
 		.out(bus_handshake_ack)
 	);
 	wire debug_req;
-	sync debug_req_sync(
+	(*keep_hierarchy*) sync debug_req_sync(
 		.clk(clk),
 		.rst_n(rst_n),
 		.in(ext_debug_req),
 		.out(debug_req)
+	);
+	wire int_req;
+	(*keep_hierarchy*) sync int_req_sync(
+		.clk(clk),
+		.rst_n(rst_n),
+		.in(ext_int_req),
+		.out(int_req)
 	);
 
 	wire [7:0] bus_data_in = uio_in;
@@ -96,12 +105,14 @@ module tt_um_aiju_8080 (
 		  .cpu_fetch		(cpu_fetch),
 		  .cpu_halted		(cpu_halted),
 		  .cpu_in_debug		(cpu_in_debug),
+		  .cpu_int_ack		(cpu_int_ack),
 		  // Inputs
 		  .clk			(clk),
 		  .rst_n		(rst_n),
 		  .memory_rdata		(memory_rdata[7:0]),
 		  .memory_done		(memory_done),
-		  .debug_req		(debug_req));
+		  .debug_req		(debug_req),
+		  .int_req		(int_req));
 
 endmodule
 

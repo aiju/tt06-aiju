@@ -125,6 +125,15 @@ class BusModel:
     await self.bus_read(0xcafe, 0x40, True)
     while (self.dut.uo_out.value & 0x20) != 0:
       await ClockCycles(self.dut.clk, 1)
+  async def set_int_req(self):
+    await ClockCycles(self.dut.clk, 1)
+    self.dut.ui_in.value = self.dut.ui_in.value | 4
+    await ClockCycles(self.dut.clk, 1)
+  async def int_ack(self):
+    await ClockCycles(self.dut.clk, 10)
+    assert (self.dut.uo_out.value & 0x80) != 0x00
+    self.dut.ui_in.value = self.dut.ui_in.value & ~4
+    await ClockCycles(self.dut.clk, 1)
 
 cpu_opcodes = {}
 def instruction(opcode, fields={}, exclude=[]):
@@ -267,6 +276,12 @@ class CPU:
       raise Exception("undefined opcode %.2x" % ir)
     await cpu_opcodes[ir](self)
     return True
+  async def step_and_interrupt(self, instr):
+    await self.bus_model.set_int_req()
+    await self.step()
+    await self.bus_model.int_ack()
+    await self.bus_model.bus_read(self.rPC, instr, False)
+    await cpu_opcodes[instr](self)
   def flags(self, data, S=None, Z=None, P=None, C=None, H=None):
     assert 0 <= data <= 255
     data_flags = {
@@ -829,6 +844,30 @@ async def test_DEBUG(dut):
     pass
   await cpu.debug()
 
+@cocotb.test()
+async def test_INT(dut):
+  await setup_dut(dut)
+  memory = Memory()
+  codegen = TestCodeGenerator(memory)
+  memory.append([0xc3, 0x00, 0x10])
+  memory.ptr = 24
+  memory.append([0x2f, 0xfb, 0xc9])
+  memory.ptr = 0x1000
+  memory.append([0xfb])
+  for n in range(64):
+    codegen.test_code([0x27])
+  memory.append([0x76])
+  cpu = CPU(BusModel(memory, RandomIOModel(), dut))
+  next_int = random.randint(10,20)
+  while True:
+    if next_int == 0:
+      await cpu.step_and_interrupt(0xdf)
+      next_int = random.randint(10,20)
+    else:
+      next_int -= 1
+      if not await cpu.step():
+        break
+
 class MSBasicIOModel:
   def __init__(self):
     self.input_buffer = " 20000\r\rY\r10 INPUT R\r20 PRINT 3.14159 * R * R\r30 END\rRUN\r 4\r"
@@ -917,4 +956,4 @@ async def test_exerciser(dut):
     await cpu.step()
     n += 1
     if (n % 1000000) == 0:
-      print(('%9d' % n) + '\b' * 9, end='', flush=True)
+      print(('%10d' % n) + '\b' * 9, end='', flush=True)

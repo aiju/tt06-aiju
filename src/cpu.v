@@ -12,10 +12,12 @@ module cpu(
     input wire memory_done,
 
     input wire debug_req,
+    input wire int_req,
 
     output wire cpu_fetch,
     output wire cpu_halted,
-    output wire cpu_in_debug
+    output wire cpu_in_debug,
+    output wire cpu_int_ack
 );
 
 	reg [15:0] AL;
@@ -83,6 +85,7 @@ module cpu(
     localparam CPU_DAD7 = 55;
     localparam CPU_IO0 = 56;
     localparam CPU_IO1 = 57;
+    localparam CPU_EIDI = 58;
     localparam CPU_DEBUG0 = 62;
     localparam CPU_DEBUG1 = 63;
 
@@ -152,6 +155,27 @@ module cpu(
 		endcase
 	end
 
+    reg int_enabled;
+    reg int_latch;
+    always @(posedge clk or negedge rst_n) begin
+        if(!rst_n) begin
+            int_enabled <= 1'b0;
+            int_latch <= 1'b0;
+        end else begin
+            if(state == CPU_EIDI) begin
+                if(iEI)
+                    int_enabled <= 1'b1;
+                if(iDI)
+                    int_enabled <= 1'b0;
+            end
+            if(cpu_int_ack)
+                int_enabled <= 1'b0;
+            if(cycle_done)
+                int_latch <= int_req && int_enabled && !(state == CPU_EIDI && iDI || cpu_int_ack);
+        end
+    end
+    assign cpu_int_ack = state == CPU_FETCH && int_latch;
+
 	reg [5:0] decode_goto;
     reg missing_decoder_case;
 	always @(*) begin
@@ -180,7 +204,7 @@ module cpu(
         iDAD: decode_goto = CPU_DAD0;
         iIN, iOUT: decode_goto = CPU_IO0;
         iNOP, undefined: decode_goto = CPU_FETCH;
-        iEI, iDI: decode_goto = CPU_FETCH;
+        iEI, iDI: decode_goto = CPU_EIDI;
         default: missing_decoder_case = 1'b1;
 		endcase
 	end
@@ -286,7 +310,7 @@ module cpu(
 
 	wire cycle_done = !memory_read && !memory_write || memory_done;
 	wire pc_increment =
-		state == CPU_FETCH && !debug_req
+		state == CPU_FETCH && !debug_req && !cpu_int_ack
         || state == CPU_MVI0 || state == CPU_JMP0 || state == CPU_JMP1 && iJMPcc && !condition
 		|| state == CPU_ALU0 && iALUI
 		|| state == CPU_LXI0 || state == CPU_LXI1
@@ -564,6 +588,8 @@ module cpu(
                 CPU_IO0:
                     state <= CPU_IO1;
                 CPU_IO1:
+                    state <= CPU_FETCH;
+                CPU_EIDI:
                     state <= CPU_FETCH;
                 default:
                     assert(0);
@@ -955,6 +981,7 @@ module cpu(
     assert property (state == CPU_IO0 || state == CPU_IO1 |-> iIN || iOUT);
     assert property (state == CPU_CALL0 || state == CPU_CALL1 || state == CPU_CALL2 || state == CPU_CALL3 |-> iCALL || iCALLcc || iRST);
     assert property (state == CPU_XCHG0 || state == CPU_XCHG1 || state == CPU_XCHG2 || state == CPU_XCHG3 || state == CPU_XCHG4 || state == CPU_XCHG5 |-> iXCHG || iXTHL);
+    assert property (state == CPU_EIDI |-> iEI || iDI);
 
     exactly_one_decode: assert property ($onehot({
         iMOV, iALU, iALUI, iMVI, iJMP, iPUSH, iPOP, iHALT, iLXI, iLDA, iSTA, iLHLD, iSHLD,
